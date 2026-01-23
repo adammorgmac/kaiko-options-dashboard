@@ -10,7 +10,7 @@ A Streamlit dashboard for analyzing cryptocurrency options data from Deribit via
 
 ### Interactive Visualizations
 - **Overview Tab**: Open Interest & Implied Volatility smile charts
-- **Greeks & Exposure Tab**: Professional gamma exposure analysis (dealer positioning)
+- **Greeks & Exposure Tab**: Gamma exposure analysis (dealer positioning)
 - **Calls vs Puts Tab**: Call/Put OI comparison with Put/Call ratio metrics
 - **IV Surface Tab**: Interactive 3D volatility surface across delta and time to maturity
 
