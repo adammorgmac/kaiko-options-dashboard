@@ -1,8 +1,8 @@
-# 📊 Kaiko Options Analytics Dashboard
+# Kaiko Options Analytics Dashboard
 
 A Streamlit dashboard for analyzing cryptocurrency options data from Deribit via Kaiko's Market Data API and using Kaiko's IV tool.
 
-## 🌟 Features
+# Features
 
 ### Multi-Asset Support
 - BTC, ETH
@@ -23,7 +23,7 @@ A Streamlit dashboard for analyzing cryptocurrency options data from Deribit via
 - Progress indicators during data fetching
 - Cached API connections
 
-## 📋 Prerequisites
+##  Prerequisites
 
 - Python 3.8 or higher
 - Kaiko API key with access to:
