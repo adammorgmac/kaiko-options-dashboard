@@ -27,6 +27,52 @@ def get_api_client():
 
 api = get_api_client()
 
+# ============================================================================
+# PASSWORD PROTECTION
+# ============================================================================
+
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == st.secrets["APP_PASSWORD"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # First run, show input for password
+        st.text_input(
+            "🔐 Enter Password", 
+            type="password", 
+            on_change=password_entered, 
+            key="password"
+        )
+        st.info("Please enter the password to access the dashboard.")
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password incorrect, show input + error
+        st.text_input(
+            "🔐 Enter Password", 
+            type="password", 
+            on_change=password_entered, 
+            key="password"
+        )
+        st.error("😕 Password incorrect")
+        return False
+    else:
+        # Password correct
+        return True
+
+if not check_password():
+    st.stop()
+
+# ============================================================================
+# MAIN APP (Only shown after password is correct)
+# ============================================================================
+
 # App title and description
 st.title("📊 Kaiko Options Analytics Dashboard")
 st.markdown("""
@@ -173,29 +219,35 @@ else:
 
 if st.session_state.get('fetch_clicked') and selected_expiry:
     
-    # Check if we have cached data
+   # Check if we have cached data
     if 'cached_data' in st.session_state and st.session_state.get('cache_key') == cache_key:
         options_df = st.session_state['cached_data']
         st.info("✨ Using cached data (click 'Fetch Options Data' again to refresh)")
     else:
-        # Fetch new data
-        with st.spinner(f"⚡ Fetching options data for {asset} expiring {selected_expiry}..."):
-            try:
-                options_df = api.get_options_data(
-                    base=asset.lower(),
-                    quote=quote,
-                    expiry=selected_expiry,
-                    max_instruments=max_instruments if max_instruments > 0 else None,
-                    atm_filter_pct=atm_filter_pct
-                )
-                
-                # Cache the data
-                st.session_state['cached_data'] = options_df
-                st.session_state['cache_key'] = cache_key
-                
-            except Exception as e:
-                st.error(f"Error fetching data: {e}")
-                options_df = pd.DataFrame()
+        # Fetch new data with clean progress
+        progress_placeholder = st.empty()
+        
+        with progress_placeholder:
+            with st.spinner(f"⚡ Fetching options data for {asset} expiring {selected_expiry}..."):
+                try:
+                    options_df = api.get_options_data(
+                        base=asset.lower(),
+                        quote=quote,
+                        expiry=selected_expiry,
+                        max_instruments=max_instruments if max_instruments > 0 else None,
+                        atm_filter_pct=atm_filter_pct
+                    )
+                    
+                    # Cache the data
+                    st.session_state['cached_data'] = options_df
+                    st.session_state['cache_key'] = cache_key
+                    
+                except Exception as e:
+                    st.error(f"Error fetching data: {e}")
+                    options_df = pd.DataFrame()
+        
+        # Clear the progress indicator
+        progress_placeholder.empty()
     
     if not options_df.empty:
         # Store in session state
