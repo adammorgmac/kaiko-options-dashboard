@@ -90,6 +90,47 @@ if not check_password():
 # MAIN APP (Only shown after password is correct)
 # ============================================================================
 
+# Custom CSS for Kaiko Indices branding
+st.markdown("""
+<style>
+    /* Kaiko Indices colors */
+    :root {
+        --kaiko-navy: #000046;
+        --kaiko-blue: #003DA6;
+        --kaiko-light-blue: #99D1FF;
+    }
+    
+    /* Style headers */
+    h1, h2, h3 {
+        color: var(--kaiko-navy) !important;
+    }
+    
+    /* Style metrics */
+    [data-testid="stMetricValue"] {
+        color: var(--kaiko-navy) !important;
+    }
+    
+    /* Custom styling for tabs */
+    .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
+        border-bottom-color: var(--kaiko-blue) !important;
+    }
+    
+    /* Footer branding */
+    footer {
+        visibility: hidden;
+    }
+    footer:after {
+        content:'Kaiko © 2026';
+        visibility: visible;
+        display: block;
+        position: relative;
+        padding: 5px;
+        top: 2px;
+        color: var(--kaiko-navy);
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # App title and description
 st.title("📊 Kaiko Options Analytics Dashboard")
 st.markdown("""
