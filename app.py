@@ -27,6 +27,13 @@ def get_api_client():
 
 api = get_api_client()
 
+# Kaiko brand colors
+KAIKO_NAVY = "#000046"
+KAIKO_ORANGE = "#FC9E21"
+KAIKO_LIGHT_ORANGE = "#FCB51E"
+KAIKO_BLUE = "#003DA6"
+KAIKO_LIGHT_BLUE = "#99D1FF"
+
 # Helper function for formatting large numbers
 def format_large_number(value, precision=1):
     """Format large numbers with M/B suffixes"""
@@ -90,36 +97,36 @@ if not check_password():
 # MAIN APP (Only shown after password is correct)
 # ============================================================================
 
-# Custom CSS for Kaiko Indices branding
-st.markdown("""
+# Custom CSS for Kaiko branding
+st.markdown(f"""
 <style>
-    /* Kaiko Indices colors */
-    :root {
-        --kaiko-navy: #000046;
-        --kaiko-blue: #003DA6;
-        --kaiko-light-blue: #99D1FF;
-    }
+    /* Kaiko brand colors */
+    :root {{
+        --kaiko-navy: {KAIKO_NAVY};
+        --kaiko-orange: {KAIKO_ORANGE};
+        --kaiko-blue: {KAIKO_BLUE};
+    }}
     
     /* Style headers */
-    h1, h2, h3 {
+    h1, h2, h3 {{
         color: var(--kaiko-navy) !important;
-    }
+    }}
     
     /* Style metrics */
-    [data-testid="stMetricValue"] {
+    [data-testid="stMetricValue"] {{
         color: var(--kaiko-navy) !important;
-    }
+    }}
     
     /* Custom styling for tabs */
-    .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {
-        border-bottom-color: var(--kaiko-blue) !important;
-    }
+    .stTabs [data-baseweb="tab-list"] button[aria-selected="true"] {{
+        border-bottom-color: var(--kaiko-orange) !important;
+    }}
     
     /* Footer branding */
-    footer {
+    footer {{
         visibility: hidden;
-    }
-    footer:after {
+    }}
+    footer:after {{
         content:'Kaiko © 2026';
         visibility: visible;
         display: block;
@@ -127,12 +134,22 @@ st.markdown("""
         padding: 5px;
         top: 2px;
         color: var(--kaiko-navy);
-    }
+    }}
 </style>
 """, unsafe_allow_html=True)
 
-# App title and description
-st.title("📊 Kaiko Options Analytics Dashboard")
+# App title with logo
+col1, col2 = st.columns([1, 5])
+with col1:
+    try:
+        st.image("assets/kaiko_logo.png", width=150)
+    except:
+        st.title("📊 Kaiko")
+
+with col2:
+    st.title("Options Analytics Dashboard")
+    st.caption("Professional derivatives analysis powered by Kaiko")
+
 st.markdown("""
 Analyze cryptocurrency options data from Deribit including:
 - **Open Interest** by strike price (in contracts & USD notional)
@@ -417,7 +434,7 @@ if 'options_data' in st.session_state:
                     x=oi_df['strike_price'],
                     y=oi_df['oi_usd_notional'] / 1e6,  # Convert to millions
                     name='OI USD',
-                    marker_color='rgb(55, 83, 109)',
+                    marker_color=KAIKO_NAVY,
                     hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
                                   '<b>OI:</b> $%{y:.2f}M<br>' +
                                   '<extra></extra>'
@@ -451,8 +468,8 @@ if 'options_data' in st.session_state:
                     y=iv_df['mark_iv'],
                     mode='lines+markers',
                     name='Mark IV',
-                    line=dict(color='rgb(255, 127, 14)', width=2),
-                    marker=dict(size=6),
+                    line=dict(color=KAIKO_ORANGE, width=2),
+                    marker=dict(size=6, color=KAIKO_ORANGE),
                     hovertemplate='<b>Strike:</b> %{x:,.0f}<br>' +
                                   '<b>IV:</b> %{y:.2f}%<br>' +
                                   '<extra></extra>'
@@ -583,16 +600,16 @@ if 'options_data' in st.session_state:
             
             gamma_by_strike['display_value'] = chart_data / divisor
             
-            # Create chart
+            # Create chart with Kaiko colors
             fig_gamma = go.Figure()
             
             if show_signed:
-                # Color by sign for signed mode
-                colors = ['rgb(31, 119, 180)' if x >= 0 else 'rgb(255, 127, 14)' 
+                # Color by sign: Orange for puts (positive), Navy for calls (negative)
+                colors = [KAIKO_ORANGE if x >= 0 else KAIKO_NAVY 
                           for x in gamma_by_strike['display_value']]
             else:
                 # Single color for unsigned mode
-                colors = 'rgb(55, 83, 109)'
+                colors = KAIKO_NAVY
             
             fig_gamma.add_trace(go.Bar(
                 x=gamma_by_strike['strike_price'],
@@ -910,7 +927,7 @@ if 'options_data' in st.session_state:
                         fig_expiry.add_trace(go.Bar(
                             x=gamma_by_expiry['expiry'],
                             y=gamma_by_expiry['display'],
-                            marker_color='rgb(55, 83, 109)',
+                            marker_color=KAIKO_NAVY,
                             hovertemplate='<b>Expiry:</b> %{x}<br>' +
                                           f'<b>Total Gamma:</b> %{{y:.2f}}{unit}<br>' +
                                           '<extra></extra>'
@@ -937,16 +954,16 @@ if 'options_data' in st.session_state:
                         
                         gamma_by_strike_expiry = multi_gamma_df.groupby(['strike_price', 'expiry'])['gex_unsigned'].sum().reset_index()
                         
-                        # Color palette for expiries
+                        # Kaiko color palette for expiries
                         colors_palette = [
-                            'rgb(31, 119, 180)',   # Blue
-                            'rgb(255, 127, 14)',   # Orange
-                            'rgb(44, 160, 44)',    # Green
-                            'rgb(214, 39, 40)',    # Red
-                            'rgb(148, 103, 189)',  # Purple
-                            'rgb(140, 86, 75)',    # Brown
-                            'rgb(227, 119, 194)',  # Pink
-                            'rgb(127, 127, 127)',  # Gray
+                            KAIKO_NAVY,
+                            KAIKO_ORANGE,
+                            KAIKO_BLUE,
+                            KAIKO_LIGHT_ORANGE,
+                            KAIKO_LIGHT_BLUE,
+                            '#FD6F1D',
+                            '#F98719',
+                            '#003DA6',
                         ]
                         
                         fig_multi = go.Figure()
@@ -1053,7 +1070,7 @@ if 'options_data' in st.session_state:
     # TAB 4: Calls vs Puts (USD NOTIONAL IN MILLIONS)
     # ========================================================================
     with tab4:
-        st.markdown("#### Call vs Put Open Interest by Strike (USD Millions)")
+        st.markdown("#### Call vs Put Open Interest by Strike")
         
         oi_split_df = df[df['oi_usd_notional'].notna()].copy()
         
@@ -1069,14 +1086,14 @@ if 'options_data' in st.session_state:
             combined = calls.merge(puts, on='strike_price', how='outer').fillna(0)
             combined = combined.sort_values('strike_price')
             
-            # Create grouped bar chart
+            # Create grouped bar chart with Kaiko colors
             fig_cp = go.Figure()
             
             fig_cp.add_trace(go.Bar(
                 x=combined['strike_price'],
                 y=combined['call_oi_usd'] / 1e6,  # Convert to millions
                 name='Calls',
-                marker_color='rgb(26, 118, 255)',
+                marker_color=KAIKO_NAVY,
                 hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
                               '<b>Call OI:</b> $%{y:.2f}M<br>' +
                               '<extra></extra>'
@@ -1086,7 +1103,7 @@ if 'options_data' in st.session_state:
                 x=combined['strike_price'],
                 y=combined['put_oi_usd'] / 1e6,  # Convert to millions
                 name='Puts',
-                marker_color='rgb(255, 65, 54)',
+                marker_color=KAIKO_ORANGE,
                 hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
                               '<b>Put OI:</b> $%{y:.2f}M<br>' +
                               '<extra></extra>'
@@ -1168,15 +1185,15 @@ if 'options_data' in st.session_state:
                 aggfunc='mean'
             )
             
-            # Create 3D surface plot
+            # Create 3D surface plot with Kaiko colors
             fig_surface = go.Figure(data=[go.Surface(
                 x=surface_pivot.columns,  # Time to expiry
                 y=surface_pivot.index,    # Delta
                 z=surface_pivot.values,   # IV
                 colorscale=[
-                    [0, 'rgb(26, 35, 126)'],     # Dark Blue
-                    [0.5, 'rgb(251, 192, 45)'],  # Yellow
-                    [1, 'rgb(229, 57, 53)']      # Red
+                    [0, KAIKO_NAVY],
+                    [0.5, KAIKO_LIGHT_BLUE],
+                    [1, KAIKO_ORANGE]
                 ],
                 hovertemplate='<b>TTM:</b> %{x:.3f}y<br>' +
                               '<b>Delta:</b> %{y:.2f}<br>' +
@@ -1307,6 +1324,6 @@ else:
     - 📊 Gamma concentration analysis with configurable assumptions
     - 📅 Multi-expiry comparison (cached for speed)
     - 🎯 Professional M/B formatting
-    - 🌊 IV surface (cached per day)
+    - 🌊 IV surface with Kaiko branding
     """)
     st.stop()
