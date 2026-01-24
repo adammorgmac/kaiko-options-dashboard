@@ -27,6 +27,23 @@ def get_api_client():
 
 api = get_api_client()
 
+# Helper function for formatting large numbers
+def format_large_number(value, precision=1):
+    """Format large numbers with M/B suffixes"""
+    if pd.isna(value):
+        return "N/A"
+    
+    abs_value = abs(value)
+    
+    if abs_value >= 1e9:
+        return f"${value/1e9:.{precision}f}B"
+    elif abs_value >= 1e6:
+        return f"${value/1e6:.{precision}f}M"
+    elif abs_value >= 1e3:
+        return f"${value/1e3:.{precision}f}K"
+    else:
+        return f"${value:.{precision}f}"
+
 # ============================================================================
 # PASSWORD PROTECTION
 # ============================================================================
@@ -79,7 +96,7 @@ st.markdown("""
 Analyze cryptocurrency options data from Deribit including:
 - **Open Interest** by strike price (in contracts & USD notional)
 - **Implied Volatility** smile
-- **Gamma Exposure** analysis (in USD terms)
+- **Gamma Exposure** analysis (in USD millions)
 - **Call/Put** comparisons
 - **3D Volatility Surface**
 """)
@@ -222,6 +239,7 @@ if st.session_state.get('fetch_clicked') and selected_expiry:
     # Check if we have cached data
     if 'cached_data' in st.session_state and st.session_state.get('cache_key') == cache_key:
         options_df = st.session_state['cached_data']
+        spot_price = st.session_state.get('cached_spot_price')
         st.info("✨ Using cached data (click 'Fetch Options Data' again to refresh)")
     else:
         # Fetch new data with clean progress
@@ -230,6 +248,10 @@ if st.session_state.get('fetch_clicked') and selected_expiry:
         with progress_placeholder:
             with st.spinner(f"⚡ Fetching options data for {asset} expiring {selected_expiry}..."):
                 try:
+                    # Fetch spot price
+                    spot_price = api.get_spot_price(base=asset.lower(), quote=quote)
+                    
+                    # Fetch options data
                     options_df = api.get_options_data(
                         base=asset.lower(),
                         quote=quote,
@@ -240,11 +262,13 @@ if st.session_state.get('fetch_clicked') and selected_expiry:
                     
                     # Cache the data
                     st.session_state['cached_data'] = options_df
+                    st.session_state['cached_spot_price'] = spot_price
                     st.session_state['cache_key'] = cache_key
                     
                 except Exception as e:
                     st.error(f"Error fetching data: {e}")
                     options_df = pd.DataFrame()
+                    spot_price = None
         
         # Clear the progress indicator
         progress_placeholder.empty()
@@ -252,6 +276,7 @@ if st.session_state.get('fetch_clicked') and selected_expiry:
     if not options_df.empty:
         # Store in session state
         st.session_state['options_data'] = options_df
+        st.session_state['spot_price'] = spot_price
         st.session_state['current_asset'] = asset
         st.session_state['current_expiry'] = selected_expiry
         
@@ -266,6 +291,7 @@ if st.session_state.get('fetch_clicked') and selected_expiry:
 
 if 'options_data' in st.session_state:
     df = st.session_state['options_data']
+    spot_price = st.session_state.get('spot_price')
     current_asset = st.session_state['current_asset']
     current_expiry = st.session_state['current_expiry']
     
@@ -273,11 +299,13 @@ if 'options_data' in st.session_state:
     # USD NORMALIZATION CALCULATIONS
     # ========================================================================
     
-    # Estimate current spot price (weighted by OI)
-    if not df.empty and df['open_interest'].notna().any():
-        spot_price = (df['strike_price'] * df['open_interest'].fillna(0)).sum() / df['open_interest'].fillna(0).sum()
-    else:
-        spot_price = df['strike_price'].median() if not df.empty else 100000
+    # Use Kaiko spot price, fallback to OI-weighted estimate
+    if spot_price is None:
+        if not df.empty and df['open_interest'].notna().any():
+            spot_price = (df['strike_price'] * df['open_interest'].fillna(0)).sum() / df['open_interest'].fillna(0).sum()
+        else:
+            spot_price = df['strike_price'].median() if not df.empty else 100000
+        st.warning("⚠️ Using estimated spot price (Kaiko spot data unavailable)")
     
     # Add USD notional columns
     df['oi_usd_notional'] = df['open_interest'] * df['strike_price']
@@ -299,7 +327,7 @@ if 'options_data' in st.session_state:
     
     with col2:
         total_oi_usd = df['oi_usd_notional'].fillna(0).sum()
-        st.metric("Total OI (USD)", f"${total_oi_usd/1e6:.1f}M")
+        st.metric("Total OI", format_large_number(total_oi_usd))
     
     with col3:
         num_instruments = len(df)
@@ -314,7 +342,7 @@ if 'options_data' in st.session_state:
             st.metric("Average IV", "N/A")
     
     with col5:
-        st.metric("Est. Spot Price", f"${spot_price:,.0f}")
+        st.metric("Spot Price", f"${spot_price:,.0f}")
     
     st.divider()
     
@@ -345,17 +373,17 @@ if 'options_data' in st.session_state:
                 
                 fig_oi.add_trace(go.Bar(
                     x=oi_df['strike_price'],
-                    y=oi_df['oi_usd_notional'],
+                    y=oi_df['oi_usd_notional'] / 1e6,  # Convert to millions
                     name='OI USD',
                     marker_color='rgb(55, 83, 109)',
                     hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
-                                  '<b>OI (USD):</b> $%{y:,.0f}<br>' +
+                                  '<b>OI:</b> $%{y:.2f}M<br>' +
                                   '<extra></extra>'
                 ))
                 
                 fig_oi.update_layout(
                     xaxis_title="Strike Price",
-                    yaxis_title="Open Interest (USD Notional)",
+                    yaxis_title="Open Interest (USD Millions)",
                     hovermode='closest',
                     height=400,
                     showlegend=False,
@@ -405,15 +433,19 @@ if 'options_data' in st.session_state:
     # TAB 2: Greeks & Exposure (USD GAMMA)
     # ========================================================================
     with tab2:
-        st.markdown("#### USD Gamma Exposure by Strike")
-        st.caption("Shows dollar gamma per strike (gamma × OI × spot × 1%). Negative = calls, positive = puts from dealer perspective")
+        st.markdown("#### Dealers USD Gamma Exposure by Strike")
+        st.caption("Dollar gamma per strike (negative = calls, positive = puts from dealer perspective)")
         
-        gamma_df = df[df['gamma_usd'].notna()].copy()
+        gamma_df = df[df['gamma'].notna() & df['open_interest'].notna()].copy()
         
         if not gamma_df.empty:
-            # Calculate signed gamma exposure (calls negative, puts positive for dealers)
+            # Gamma exposure: gamma × OI × spot² / 100
+            # This gives dollar change in delta hedging for 1% spot move
+            gamma_df['gamma_exposure'] = gamma_df['gamma'] * gamma_df['open_interest'] * (spot_price ** 2) / 100
+            
+            # Sign convention: dealers are short calls (negative), long puts (positive)
             gamma_df['gamma_exposure_signed'] = gamma_df.apply(
-                lambda row: row['gamma_usd'] * (-1 if row['option_type'] == 'call' else 1),
+                lambda row: row['gamma_exposure'] * (-1 if row['option_type'] == 'call' else 1),
                 axis=1
             )
             
@@ -421,24 +453,46 @@ if 'options_data' in st.session_state:
             gamma_by_strike = gamma_df.groupby('strike_price')['gamma_exposure_signed'].sum().reset_index()
             gamma_by_strike = gamma_by_strike.sort_values('strike_price')
             
+            # Determine best unit (K, M, or B)
+            max_abs_gamma = gamma_by_strike['gamma_exposure_signed'].abs().max()
+            
+            if max_abs_gamma >= 1e9:
+                divisor = 1e9
+                unit = "B"
+                ylabel = "Dealers USD Gamma (1% Move, Billions)"
+            elif max_abs_gamma >= 1e6:
+                divisor = 1e6
+                unit = "M"
+                ylabel = "Dealers USD Gamma (1% Move, Millions)"
+            elif max_abs_gamma >= 1e3:
+                divisor = 1e3
+                unit = "K"
+                ylabel = "Dealers USD Gamma (1% Move, Thousands)"
+            else:
+                divisor = 1
+                unit = ""
+                ylabel = "Dealers USD Gamma (1% Move)"
+            
+            gamma_by_strike['gamma_display'] = gamma_by_strike['gamma_exposure_signed'] / divisor
+            
             # Create chart
             fig_gamma = go.Figure()
             
             colors = ['rgb(31, 119, 180)' if x >= 0 else 'rgb(255, 127, 14)' 
-                      for x in gamma_by_strike['gamma_exposure_signed']]
+                      for x in gamma_by_strike['gamma_display']]
             
             fig_gamma.add_trace(go.Bar(
                 x=gamma_by_strike['strike_price'],
-                y=gamma_by_strike['gamma_exposure_signed'],
+                y=gamma_by_strike['gamma_display'],
                 marker_color=colors,
                 marker_line_width=0,
                 width=gamma_by_strike['strike_price'].diff().median() * 0.8 if len(gamma_by_strike) > 1 else 1000,
                 hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
-                              '<b>USD Gamma:</b> $%{y:,.0f}<br>' +
+                              f'<b>USD Gamma:</b> %{{y:.2f}}{unit}<br>' +
                               '<extra></extra>'
             ))
             
-            # Add vertical line at estimated spot price
+            # Add vertical line at spot price
             fig_gamma.add_vline(
                 x=spot_price, 
                 line_dash="dash", 
@@ -453,7 +507,7 @@ if 'options_data' in st.session_state:
             
             fig_gamma.update_layout(
                 xaxis_title="Strike Price (USD)",
-                yaxis_title="USD Gamma Exposure (1% Move)",
+                yaxis_title=ylabel,
                 hovermode='closest',
                 height=500,
                 showlegend=False,
@@ -469,7 +523,9 @@ if 'options_data' in st.session_state:
                     showgrid=True,
                     gridcolor='lightgray',
                     gridwidth=0.5,
-                    zeroline=False
+                    zeroline=False,
+                    ticksuffix=unit,
+                    tickformat='.1f'
                 )
             )
             
@@ -479,7 +535,7 @@ if 'options_data' in st.session_state:
             col1, col2, col3 = st.columns(3)
             with col1:
                 total_gamma_usd = gamma_by_strike['gamma_exposure_signed'].sum()
-                st.metric("Net USD Gamma", f"${total_gamma_usd:,.0f}")
+                st.metric("Net USD Gamma", format_large_number(total_gamma_usd))
             with col2:
                 max_strike = gamma_by_strike.loc[gamma_by_strike['gamma_exposure_signed'].abs().idxmax(), 'strike_price']
                 st.metric("Max Gamma Strike", f"${max_strike:,.0f}")
@@ -491,10 +547,10 @@ if 'options_data' in st.session_state:
             st.warning("No gamma data available for exposure calculation")
     
     # ========================================================================
-    # TAB 3: Calls vs Puts (USD NOTIONAL)
+    # TAB 3: Calls vs Puts (USD NOTIONAL IN MILLIONS)
     # ========================================================================
     with tab3:
-        st.markdown("#### Call vs Put Open Interest by Strike (USD Notional)")
+        st.markdown("#### Call vs Put Open Interest by Strike (USD Millions)")
         
         oi_split_df = df[df['oi_usd_notional'].notna()].copy()
         
@@ -515,27 +571,27 @@ if 'options_data' in st.session_state:
             
             fig_cp.add_trace(go.Bar(
                 x=combined['strike_price'],
-                y=combined['call_oi_usd'],
+                y=combined['call_oi_usd'] / 1e6,  # Convert to millions
                 name='Calls',
                 marker_color='rgb(26, 118, 255)',
                 hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
-                              '<b>Call OI (USD):</b> $%{y:,.0f}<br>' +
+                              '<b>Call OI:</b> $%{y:.2f}M<br>' +
                               '<extra></extra>'
             ))
             
             fig_cp.add_trace(go.Bar(
                 x=combined['strike_price'],
-                y=combined['put_oi_usd'],
+                y=combined['put_oi_usd'] / 1e6,  # Convert to millions
                 name='Puts',
                 marker_color='rgb(255, 65, 54)',
                 hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
-                              '<b>Put OI (USD):</b> $%{y:,.0f}<br>' +
+                              '<b>Put OI:</b> $%{y:.2f}M<br>' +
                               '<extra></extra>'
             ))
             
             fig_cp.update_layout(
                 xaxis_title="Strike Price",
-                yaxis_title="Open Interest (USD Notional)",
+                yaxis_title="Open Interest (USD Millions)",
                 barmode='group',
                 hovermode='closest',
                 height=500,
@@ -556,13 +612,13 @@ if 'options_data' in st.session_state:
             col1, col2, col3 = st.columns(3)
             with col1:
                 total_call_oi_usd = combined['call_oi_usd'].sum()
-                st.metric("Total Call OI (USD)", f"${total_call_oi_usd/1e6:.1f}M")
+                st.metric("Total Call OI", format_large_number(total_call_oi_usd))
             with col2:
                 total_put_oi_usd = combined['put_oi_usd'].sum()
-                st.metric("Total Put OI (USD)", f"${total_put_oi_usd/1e6:.1f}M")
+                st.metric("Total Put OI", format_large_number(total_put_oi_usd))
             with col3:
                 pc_ratio = total_put_oi_usd / total_call_oi_usd if total_call_oi_usd > 0 else 0
-                st.metric("Put/Call Ratio (USD)", f"{pc_ratio:.2f}")
+                st.metric("Put/Call Ratio", f"{pc_ratio:.2f}")
         else:
             st.warning("No open interest data available for call/put split")
     
@@ -675,10 +731,10 @@ if 'options_data' in st.session_state:
     download_df = df.copy()
     download_df['asset'] = current_asset
     download_df['fetch_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    download_df['spot_price_estimate'] = spot_price
+    download_df['spot_price'] = spot_price
     
     # Reorder columns for better CSV layout
-    cols_order = ['fetch_time', 'asset', 'spot_price_estimate', 'expiry', 'instrument', 'strike_price', 
+    cols_order = ['fetch_time', 'asset', 'spot_price', 'expiry', 'instrument', 'strike_price', 
                   'option_type', 'open_interest', 'oi_usd_notional', 'mark_iv', 'bid_iv', 'ask_iv',
                   'delta', 'gamma', 'gamma_usd', 'vega', 'theta', 'rho']
     
@@ -732,8 +788,9 @@ else:
     - 💾 Data is cached - switching tabs is instant
     - 🔄 Click "Fetch Options Data" again to refresh cached data
     
-    **New Features:**
-    - 💵 OI shown in USD notional value
-    - 📊 Gamma exposure in USD terms per strike
+    **Features:**
+    - 💵 Real-time spot price from Kaiko
+    - 📊 Gamma exposure in millions
+    - 🎯 Professional M/B formatting
     """)
     st.stop()

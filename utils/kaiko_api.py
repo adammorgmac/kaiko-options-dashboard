@@ -44,6 +44,46 @@ class KaikoAPI:
             date = pd.to_datetime(date)
         return date.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
     
+    def get_spot_price(self, base: str, quote: str) -> float:
+        """
+        Fetch current spot price from Kaiko OHLCV endpoint.
+        
+        Args:
+            base: Base asset (e.g., 'btc')
+            quote: Quote currency (e.g., 'usd')
+            
+        Returns:
+            Current spot price as float, or None if unavailable
+        """
+        # Try multiple exchanges for spot price
+        exchanges = ['cbse', 'krkn', 'bnce']  # Coinbase, Kraken, Binance
+        
+        for exchange in exchanges:
+            try:
+                url = f"{self.base_url}/v2/data/trades.v1/exchanges/{exchange}/spot/{base}-{quote}/aggregations/count_ohlcv_vwap"
+                params = {
+                    'page_size': 1,
+                    'sort': 'desc',
+                    'interval': '1m'
+                }
+                
+                response = requests.get(url, headers=self.headers, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                
+                result = data.get('data', [])
+                if result and len(result) > 0:
+                    # Use VWAP as spot price
+                    price = result[0].get('price')
+                    if price:
+                        return float(price)
+                        
+            except Exception as e:
+                continue  # Try next exchange
+        
+        # If all exchanges fail, return None
+        print(f"Could not fetch spot price for {base}-{quote}")
+        return None
     def get_instruments(self, base: str, quote: str, start_date: datetime, 
                        end_date: datetime, exchange: str = 'drbt') -> pd.DataFrame:
         """
@@ -258,10 +298,6 @@ class KaikoAPI:
             # Process completed tasks as they finish
             for future in as_completed(future_to_row):
                 completed += 1
-                
-                result = future.result()
-                if result:
-                    risk_data.append(result)
                 
                 result = future.result()
                 if result:
