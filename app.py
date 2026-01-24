@@ -97,6 +97,7 @@ Analyze cryptocurrency options data from Deribit including:
 - **Open Interest** by strike price (in contracts & USD notional)
 - **Implied Volatility** smile
 - **Gamma Concentration** analysis (USD notional per 1% move)
+- **Multi-Expiry** comparison across different expiration dates
 - **Call/Put** comparisons
 - **3D Volatility Surface**
 """)
@@ -353,7 +354,7 @@ if 'options_data' in st.session_state:
     st.markdown("### 📊 Visualizations")
     
     # Create tabs for different chart categories
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Overview", "⚡ Gamma Concentration", "🔵🔴 Calls vs Puts", "🌊 IV Surface"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Overview", "⚡ Gamma Concentration", "📅 Multi-Expiry", "🔵🔴 Calls vs Puts", "🌊 IV Surface"])
     
     # ========================================================================
     # TAB 1: Overview - OI and IV
@@ -390,7 +391,7 @@ if 'options_data' in st.session_state:
                     margin=dict(l=50, r=50, t=30, b=50)
                 )
                 
-                st.plotly_chart(fig_oi, use_container_width=True)
+                st.plotly_chart(fig_oi, use_container_width=True, key="oi_chart")
             else:
                 st.warning("No Open Interest data available")
         
@@ -425,7 +426,7 @@ if 'options_data' in st.session_state:
                     margin=dict(l=50, r=50, t=30, b=50)
                 )
                 
-                st.plotly_chart(fig_iv, use_container_width=True)
+                st.plotly_chart(fig_iv, use_container_width=True, key="iv_chart")
             else:
                 st.warning("No Implied Volatility data available")
     
@@ -503,7 +504,7 @@ if 'options_data' in st.session_state:
                     'gex_unsigned': 'sum'
                 }).reset_index()
                 gamma_by_strike['gex_signed'] = 0  # Add dummy column for consistency
-
+            
             gamma_by_strike = gamma_by_strike.sort_values('strike_price')
             
             # ================================================================
@@ -601,7 +602,7 @@ if 'options_data' in st.session_state:
                 )
             )
             
-            st.plotly_chart(fig_gamma, use_container_width=True)
+            st.plotly_chart(fig_gamma, use_container_width=True, key="gamma_chart")
             
             # ================================================================
             # SUMMARY METRICS
@@ -769,9 +770,248 @@ if 'options_data' in st.session_state:
             st.warning("No gamma data available for analysis")
     
     # ========================================================================
-    # TAB 3: Calls vs Puts (USD NOTIONAL IN MILLIONS)
+    # TAB 3: Multi-Expiry Analysis
     # ========================================================================
     with tab3:
+        st.markdown("#### Multi-Expiry Gamma Analysis")
+        st.caption("Compare gamma concentration across different expiration dates")
+        
+        # Multi-expiry selector
+        if 'expiries' in st.session_state and st.session_state['expiries']:
+            available_expiries = st.session_state['expiries']
+            
+            st.markdown("##### Select Expiries to Compare")
+            
+            # Quick select options
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button("📅 Next 2 Expiries", use_container_width=True):
+                    st.session_state['selected_multi_expiries'] = available_expiries[:2]
+            with col2:
+                if st.button("📅 Next 3 Expiries", use_container_width=True):
+                    st.session_state['selected_multi_expiries'] = available_expiries[:3]
+            with col3:
+                if st.button("📅 Next 5 Expiries", use_container_width=True):
+                    st.session_state['selected_multi_expiries'] = available_expiries[:5]
+            
+            # Manual selection
+            selected_expiries = st.multiselect(
+                "Or select specific expiries:",
+                options=available_expiries,
+                default=st.session_state.get('selected_multi_expiries', available_expiries[:2]),
+                help="Select multiple expiries to compare"
+            )
+            
+            st.session_state['selected_multi_expiries'] = selected_expiries
+            
+            if st.button("🔄 Fetch Multi-Expiry Data", type="primary", disabled=len(selected_expiries) == 0):
+                st.session_state['fetch_multi_clicked'] = True
+            
+            # Fetch and analyze multi-expiry data
+            if st.session_state.get('fetch_multi_clicked') and len(selected_expiries) > 0:
+                
+                # Check cache first
+                multi_cache_key = f"multi_{current_asset}_{'_'.join(selected_expiries)}"
+                
+                if multi_cache_key in st.session_state:
+                    multi_df = st.session_state[multi_cache_key]
+                    st.info("✨ Using cached multi-expiry data")
+                else:
+                    with st.spinner(f"Fetching data for {len(selected_expiries)} expiries..."):
+                        multi_df = api.get_multi_expiry_options_data(
+                            base=current_asset.lower(),
+                            quote=quote,
+                            expiries=selected_expiries,
+                            max_instruments_per_expiry=max_instruments if max_instruments > 0 else None,
+                            atm_filter_pct=atm_filter_pct
+                        )
+                        
+                        # Cache the result
+                        if not multi_df.empty:
+                            st.session_state[multi_cache_key] = multi_df
+                
+                if not multi_df.empty:
+                    st.success(f"✅ Loaded {len(multi_df)} instruments across {len(selected_expiries)} expiries")
+                    
+                    # Calculate gamma for all expiries
+                    multi_gamma_df = multi_df[multi_df['gamma'].notna() & multi_df['open_interest'].notna()].copy()
+                    
+                    if not multi_gamma_df.empty:
+                        # Calculate unsigned gamma concentration
+                        multi_gamma_df['gex_1pct_usd'] = multi_gamma_df['gamma'] * (spot_price ** 2) / 100 * multi_gamma_df['open_interest']
+                        multi_gamma_df['gex_unsigned'] = multi_gamma_df['gex_1pct_usd'].abs()
+                        
+                        # ====================================================
+                        # CHART 1: Gamma by Expiry (Aggregate)
+                        # ====================================================
+                        
+                        st.markdown("---")
+                        st.markdown("#### Total Gamma Concentration by Expiry")
+                        
+                        gamma_by_expiry = multi_gamma_df.groupby('expiry')['gex_unsigned'].sum().reset_index()
+                        gamma_by_expiry = gamma_by_expiry.sort_values('expiry')
+                        
+                        # Determine scaling
+                        max_val = gamma_by_expiry['gex_unsigned'].max()
+                        if max_val >= 1e9:
+                            divisor, unit = 1e9, "B"
+                        elif max_val >= 1e6:
+                            divisor, unit = 1e6, "M"
+                        elif max_val >= 1e3:
+                            divisor, unit = 1e3, "K"
+                        else:
+                            divisor, unit = 1, ""
+                        
+                        gamma_by_expiry['display'] = gamma_by_expiry['gex_unsigned'] / divisor
+                        
+                        fig_expiry = go.Figure()
+                        
+                        fig_expiry.add_trace(go.Bar(
+                            x=gamma_by_expiry['expiry'],
+                            y=gamma_by_expiry['display'],
+                            marker_color='rgb(55, 83, 109)',
+                            hovertemplate='<b>Expiry:</b> %{x}<br>' +
+                                          f'<b>Total Gamma:</b> %{{y:.2f}}{unit}<br>' +
+                                          '<extra></extra>'
+                        ))
+                        
+                        fig_expiry.update_layout(
+                            xaxis_title="Expiry Date",
+                            yaxis_title=f"Total Gamma Concentration ({unit})",
+                            height=400,
+                            showlegend=False,
+                            margin=dict(l=50, r=50, t=30, b=100),
+                            xaxis=dict(tickangle=-45)
+                        )
+                        
+                        st.plotly_chart(fig_expiry, use_container_width=True, key="multi_expiry_bar")
+                        
+                        # ====================================================
+                        # CHART 2: Gamma by Strike, Colored by Expiry
+                        # ====================================================
+                        
+                        st.markdown("---")
+                        st.markdown("#### Gamma Concentration by Strike (All Expiries)")
+                        st.caption("Each expiry shown in different color")
+                        
+                        gamma_by_strike_expiry = multi_gamma_df.groupby(['strike_price', 'expiry'])['gex_unsigned'].sum().reset_index()
+                        
+                        # Color palette for expiries
+                        colors_palette = [
+                            'rgb(31, 119, 180)',   # Blue
+                            'rgb(255, 127, 14)',   # Orange
+                            'rgb(44, 160, 44)',    # Green
+                            'rgb(214, 39, 40)',    # Red
+                            'rgb(148, 103, 189)',  # Purple
+                            'rgb(140, 86, 75)',    # Brown
+                            'rgb(227, 119, 194)',  # Pink
+                            'rgb(127, 127, 127)',  # Gray
+                        ]
+                        
+                        fig_multi = go.Figure()
+                        
+                        for idx, expiry in enumerate(selected_expiries):
+                            expiry_data = gamma_by_strike_expiry[gamma_by_strike_expiry['expiry'] == expiry]
+                            expiry_data = expiry_data.sort_values('strike_price')
+                            
+                            color = colors_palette[idx % len(colors_palette)]
+                            
+                            fig_multi.add_trace(go.Bar(
+                                x=expiry_data['strike_price'],
+                                y=expiry_data['gex_unsigned'] / divisor,
+                                name=expiry,
+                                marker_color=color,
+                                hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
+                                              f'<b>Gamma:</b> %{{y:.2f}}{unit}<br>' +
+                                              f'<b>Expiry:</b> {expiry}<br>' +
+                                              '<extra></extra>'
+                            ))
+                        
+                        # Add spot line
+                        fig_multi.add_vline(
+                            x=spot_price,
+                            line_dash="dash",
+                            line_color="gray",
+                            line_width=2,
+                            annotation_text=f"Spot: ${spot_price:,.0f}",
+                            annotation_position="top"
+                        )
+                        
+                        fig_multi.update_layout(
+                            xaxis_title="Strike Price (USD)",
+                            yaxis_title=f"Gamma Concentration ({unit})",
+                            height=500,
+                            barmode='stack',
+                            hovermode='closest',
+                            legend=dict(
+                                orientation="h",
+                                yanchor="bottom",
+                                y=1.02,
+                                xanchor="right",
+                                x=1
+                            ),
+                            margin=dict(l=60, r=50, t=80, b=60)
+                        )
+                        
+                        st.plotly_chart(fig_multi, use_container_width=True, key="multi_expiry_stack")
+                        
+                        # ====================================================
+                        # SUMMARY METRICS
+                        # ====================================================
+                        
+                        st.markdown("---")
+                        st.markdown("#### Multi-Expiry Summary")
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            total_gamma_all = gamma_by_expiry['gex_unsigned'].sum()
+                            st.metric("Total Gamma (All Expiries)", format_large_number(total_gamma_all))
+                        
+                        with col2:
+                            dominant_expiry = gamma_by_expiry.loc[gamma_by_expiry['gex_unsigned'].idxmax(), 'expiry']
+                            st.metric("Dominant Expiry", dominant_expiry)
+                        
+                        with col3:
+                            dominant_pct = (gamma_by_expiry['gex_unsigned'].max() / total_gamma_all) * 100
+                            st.metric("Dominant %", f"{dominant_pct:.1f}%")
+                        
+                        with col4:
+                            num_expiries = len(selected_expiries)
+                            st.metric("Expiries Analyzed", num_expiries)
+                        
+                        # ====================================================
+                        # EXPIRY BREAKDOWN TABLE
+                        # ====================================================
+                        
+                        st.markdown("---")
+                        st.markdown("#### Expiry Breakdown")
+                        
+                        breakdown = gamma_by_expiry.copy()
+                        breakdown['percentage'] = (breakdown['gex_unsigned'] / total_gamma_all * 100)
+                        breakdown['gamma_formatted'] = breakdown['gex_unsigned'].apply(format_large_number)
+                        
+                        st.dataframe(
+                            breakdown[['expiry', 'gamma_formatted', 'percentage']].rename(columns={
+                                'expiry': 'Expiry Date',
+                                'gamma_formatted': 'Total Gamma',
+                                'percentage': '% of Total'
+                            }),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        
+                    else:
+                        st.warning("No gamma data available for selected expiries")
+                else:
+                    st.error("❌ Failed to fetch multi-expiry data")
+        else:
+            st.info("👆 Please load expiries first from the sidebar")
+    
+    # ========================================================================
+    # TAB 4: Calls vs Puts (USD NOTIONAL IN MILLIONS)
+    # ========================================================================
+    with tab4:
         st.markdown("#### Call vs Put Open Interest by Strike (USD Millions)")
         
         oi_split_df = df[df['oi_usd_notional'].notna()].copy()
@@ -827,7 +1067,7 @@ if 'options_data' in st.session_state:
                 margin=dict(l=50, r=50, t=50, b=50)
             )
             
-            st.plotly_chart(fig_cp, use_container_width=True)
+            st.plotly_chart(fig_cp, use_container_width=True, key="calls_puts_chart")
             
             # Add summary metrics
             st.markdown("#### Summary Metrics")
@@ -845,27 +1085,38 @@ if 'options_data' in st.session_state:
             st.warning("No open interest data available for call/put split")
     
     # ========================================================================
-    # TAB 4: IV Surface
+    # TAB 5: IV Surface
     # ========================================================================
-    with tab4:
+    with tab5:
         st.markdown("#### Implied Volatility Surface")
         st.caption("3D visualization of implied volatility across delta and time to maturity")
         
         # Use yesterday's date at 8:00 UTC (data must be historical)
         surface_time = (datetime.now() - timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
         
-        st.info(f"Fetching IV surface for {surface_time.strftime('%Y-%m-%d %H:%M UTC')}")
+        # Check if we have cached IV surface for this asset
+        surface_cache_key = f"iv_surface_{current_asset}_{surface_time.strftime('%Y%m%d')}"
         
-        # Fetch IV surface data
-        with st.spinner("Loading IV surface..."):
-            iv_surface_df = api.get_iv_surface(
-                base=current_asset.lower(),
-                quote=quote,
-                value_time=surface_time,
-                tte_min=0.01,   # ~3.65 days
-                tte_max=0.5,    # 6 months
-                tte_step=0.02   # ~7 days
-            )
+        if surface_cache_key in st.session_state:
+            iv_surface_df = st.session_state[surface_cache_key]
+            st.info(f"✨ Using cached IV surface for {surface_time.strftime('%Y-%m-%d %H:%M UTC')}")
+        else:
+            st.info(f"Fetching IV surface for {surface_time.strftime('%Y-%m-%d %H:%M UTC')}")
+            
+            # Fetch IV surface data only once
+            with st.spinner("Loading IV surface..."):
+                iv_surface_df = api.get_iv_surface(
+                    base=current_asset.lower(),
+                    quote=quote,
+                    value_time=surface_time,
+                    tte_min=0.01,   # ~3.65 days
+                    tte_max=0.5,    # 6 months
+                    tte_step=0.02   # ~7 days
+                )
+                
+                # Cache the surface data
+                if not iv_surface_df.empty:
+                    st.session_state[surface_cache_key] = iv_surface_df
         
         if not iv_surface_df.empty:
             # Create pivot table for surface plot
@@ -908,7 +1159,7 @@ if 'options_data' in st.session_state:
                 margin=dict(l=0, r=0, t=30, b=0)
             )
             
-            st.plotly_chart(fig_surface, use_container_width=True)
+            st.plotly_chart(fig_surface, use_container_width=True, key="iv_surface_chart")
             
             # Add surface metrics
             st.markdown("#### Surface Metrics")
@@ -1013,6 +1264,8 @@ else:
     **Features:**
     - 💵 Real-time spot price from Kaiko
     - 📊 Gamma concentration analysis with configurable assumptions
+    - 📅 Multi-expiry comparison (cached for speed)
     - 🎯 Professional M/B formatting
+    - 🌊 IV surface (cached per day)
     """)
     st.stop()

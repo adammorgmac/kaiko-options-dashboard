@@ -84,6 +84,7 @@ class KaikoAPI:
         # If all exchanges fail, return None
         print(f"Could not fetch spot price for {base}-{quote}")
         return None
+    
     def get_instruments(self, base: str, quote: str, start_date: datetime, 
                        end_date: datetime, exchange: str = 'drbt') -> pd.DataFrame:
         """
@@ -308,6 +309,48 @@ class KaikoAPI:
         
         result_df = pd.DataFrame(risk_data)
         return result_df
+    
+    def get_multi_expiry_options_data(self, base: str, quote: str, expiries: List[str],
+                                     exchange: str = 'drbt', max_instruments_per_expiry: int = None,
+                                     atm_filter_pct: float = None) -> pd.DataFrame:
+        """
+        Fetch options data for multiple expiries at once.
+        
+        Args:
+            base: Base asset (e.g., 'btc', 'eth')
+            quote: Quote currency (e.g., 'usd', 'usdc')
+            expiries: List of expiry dates to fetch
+            exchange: Exchange code (default: 'drbt')
+            max_instruments_per_expiry: Limit per expiry
+            atm_filter_pct: ATM filter percentage
+            
+        Returns:
+            Combined DataFrame with all expiries
+        """
+        all_data = []
+        
+        for expiry in expiries:
+            try:
+                expiry_data = self.get_options_data(
+                    base=base,
+                    quote=quote,
+                    expiry=expiry,
+                    exchange=exchange,
+                    max_instruments=max_instruments_per_expiry,
+                    atm_filter_pct=atm_filter_pct
+                )
+                
+                if not expiry_data.empty:
+                    all_data.append(expiry_data)
+                    
+            except Exception as e:
+                print(f"Error fetching {expiry}: {e}")
+                continue
+        
+        if all_data:
+            return pd.concat(all_data, ignore_index=True)
+        else:
+            return pd.DataFrame()
     
     def get_iv_surface(self, base: str, quote: str, value_time: datetime, 
                       tte_min: float = 0.01, tte_max: float = 1.0, 
