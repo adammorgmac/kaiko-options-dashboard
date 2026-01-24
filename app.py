@@ -96,7 +96,7 @@ st.markdown("""
 Analyze cryptocurrency options data from Deribit including:
 - **Open Interest** by strike price (in contracts & USD notional)
 - **Implied Volatility** smile
-- **Gamma Exposure** analysis (in USD millions)
+- **Gamma Concentration** analysis (USD notional per 1% move)
 - **Call/Put** comparisons
 - **3D Volatility Surface**
 """)
@@ -248,8 +248,11 @@ if st.session_state.get('fetch_clicked') and selected_expiry:
         with progress_placeholder:
             with st.spinner(f"⚡ Fetching options data for {asset} expiring {selected_expiry}..."):
                 try:
-                    # Fetch spot price
-                    spot_price = api.get_spot_price(base=asset.lower(), quote=quote)
+                    # Fetch spot price (non-blocking - use fallback if fails)
+                    try:
+                        spot_price = api.get_spot_price(base=asset.lower(), quote=quote)
+                    except:
+                        spot_price = None
                     
                     # Fetch options data
                     options_df = api.get_options_data(
@@ -310,9 +313,6 @@ if 'options_data' in st.session_state:
     # Add USD notional columns
     df['oi_usd_notional'] = df['open_interest'] * df['strike_price']
     
-    # Add USD gamma per strike (gamma × OI × spot for 1% move)
-    df['gamma_usd'] = df['gamma'] * df['open_interest'] * spot_price * 0.01
-    
     # Display current selection
     st.subheader(f"📈 {current_asset} Options - Expiry: {current_expiry}")
     
@@ -353,7 +353,7 @@ if 'options_data' in st.session_state:
     st.markdown("### 📊 Visualizations")
     
     # Create tabs for different chart categories
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Overview", "⚡ Greeks & Exposure", "🔵🔴 Calls vs Puts", "🌊 IV Surface"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📈 Overview", "⚡ Gamma Concentration", "🔵🔴 Calls vs Puts", "🌊 IV Surface"])
     
     # ========================================================================
     # TAB 1: Overview - OI and IV
@@ -430,69 +430,140 @@ if 'options_data' in st.session_state:
                 st.warning("No Implied Volatility data available")
     
     # ========================================================================
-    # TAB 2: Greeks & Exposure (USD GAMMA)
+    # TAB 2: Gamma Concentration
     # ========================================================================
     with tab2:
-        st.markdown("#### Dealers USD Gamma Exposure by Strike")
-        st.caption("Dollar gamma per strike (negative = calls, positive = puts from dealer perspective)")
+        st.markdown("#### Gamma Concentration by Strike")
+        
+        # ====================================================================
+        # POSITIONING PRIOR SELECTOR
+        # ====================================================================
+        
+        st.markdown("##### ⚙️ Positioning Assumption")
+        
+        positioning_prior = st.radio(
+            "Select positioning prior:",
+            options=[
+                "Unsigned only (no positioning assumption)",
+                "Assume dealers short calls / long puts (signed proxy)",
+                "Assume dealers long calls / short puts (signed proxy)"
+            ],
+            index=0,
+            help="Choose whether to apply a positioning assumption to infer signed gamma exposure"
+        )
+        
+        show_signed = positioning_prior != "Unsigned only (no positioning assumption)"
+        dealer_short_calls = positioning_prior == "Assume dealers short calls / long puts (signed proxy)"
+        
+        st.caption("""
+        **Methodology Note:** We observe open interest and greeks, not dealer inventory or trade direction. 
+        Magnitudes shown are derived from OI × gamma. Signs (if shown) come from the selected positioning prior.
+        """)
+        
+        st.markdown("---")
+        
+        # ====================================================================
+        # GAMMA CALCULATION
+        # ====================================================================
         
         gamma_df = df[df['gamma'].notna() & df['open_interest'].notna()].copy()
         
         if not gamma_df.empty:
-            # Gamma exposure: gamma × OI × spot² / 100
-            # This gives dollar change in delta hedging for 1% spot move
-            gamma_df['gamma_exposure'] = gamma_df['gamma'] * gamma_df['open_interest'] * (spot_price ** 2) / 100
+            # Consistent gamma exposure metric: USD notional per 1% spot move
+            # Formula: gamma × spot² / 100 × OI
+            gamma_df['gex_1pct_usd_per_contract'] = gamma_df['gamma'] * (spot_price ** 2) / 100
+            gamma_df['gex_1pct_usd'] = gamma_df['gex_1pct_usd_per_contract'] * gamma_df['open_interest']
             
-            # Sign convention: dealers are short calls (negative), long puts (positive)
-            gamma_df['gamma_exposure_signed'] = gamma_df.apply(
-                lambda row: row['gamma_exposure'] * (-1 if row['option_type'] == 'call' else 1),
-                axis=1
-            )
+            # Unsigned concentration (always calculated)
+            gamma_df['gex_unsigned'] = gamma_df['gex_1pct_usd'].abs()
+            
+            # Signed proxy (only if positioning prior selected)
+            if show_signed:
+                if dealer_short_calls:
+                    # Dealers short calls (negative), long puts (positive)
+                    gamma_df['gex_signed'] = gamma_df.apply(
+                        lambda row: row['gex_1pct_usd'] * (-1 if row['option_type'] == 'call' else 1),
+                        axis=1
+                    )
+                else:
+                    # Dealers long calls (positive), short puts (negative)
+                    gamma_df['gex_signed'] = gamma_df.apply(
+                        lambda row: row['gex_1pct_usd'] * (1 if row['option_type'] == 'call' else -1),
+                        axis=1
+                    )
             
             # Aggregate by strike
-            gamma_by_strike = gamma_df.groupby('strike_price')['gamma_exposure_signed'].sum().reset_index()
+            if show_signed:
+                gamma_by_strike = gamma_df.groupby('strike_price').agg({
+                    'gex_unsigned': 'sum',
+                    'gex_signed': 'sum'
+                }).reset_index()
+            else:
+                gamma_by_strike = gamma_df.groupby('strike_price').agg({
+                    'gex_unsigned': 'sum'
+                }).reset_index()
+                gamma_by_strike['gex_signed'] = 0  # Add dummy column for consistency
+
             gamma_by_strike = gamma_by_strike.sort_values('strike_price')
             
-            # Determine best unit (K, M, or B)
-            max_abs_gamma = gamma_by_strike['gamma_exposure_signed'].abs().max()
+            # ================================================================
+            # CHART: GAMMA CONCENTRATION
+            # ================================================================
             
-            if max_abs_gamma >= 1e9:
+            if show_signed:
+                chart_title = "Gamma Concentration by Strike (Signed Proxy - Assumption-Driven)"
+                chart_data = gamma_by_strike['gex_signed']
+            else:
+                chart_title = "Gamma Concentration by Strike (USD Notional per 1% Move)"
+                chart_data = gamma_by_strike['gex_unsigned']
+            
+            st.markdown(f"#### {chart_title}")
+            
+            # Determine scaling
+            max_abs_value = chart_data.abs().max()
+            
+            if max_abs_value >= 1e9:
                 divisor = 1e9
                 unit = "B"
-                ylabel = "Dealers USD Gamma (1% Move, Billions)"
-            elif max_abs_gamma >= 1e6:
+                ylabel = "USD Gamma (1% Move, Billions)"
+            elif max_abs_value >= 1e6:
                 divisor = 1e6
                 unit = "M"
-                ylabel = "Dealers USD Gamma (1% Move, Millions)"
-            elif max_abs_gamma >= 1e3:
+                ylabel = "USD Gamma (1% Move, Millions)"
+            elif max_abs_value >= 1e3:
                 divisor = 1e3
                 unit = "K"
-                ylabel = "Dealers USD Gamma (1% Move, Thousands)"
+                ylabel = "USD Gamma (1% Move, Thousands)"
             else:
                 divisor = 1
                 unit = ""
-                ylabel = "Dealers USD Gamma (1% Move)"
+                ylabel = "USD Gamma (1% Move)"
             
-            gamma_by_strike['gamma_display'] = gamma_by_strike['gamma_exposure_signed'] / divisor
+            gamma_by_strike['display_value'] = chart_data / divisor
             
             # Create chart
             fig_gamma = go.Figure()
             
-            colors = ['rgb(31, 119, 180)' if x >= 0 else 'rgb(255, 127, 14)' 
-                      for x in gamma_by_strike['gamma_display']]
+            if show_signed:
+                # Color by sign for signed mode
+                colors = ['rgb(31, 119, 180)' if x >= 0 else 'rgb(255, 127, 14)' 
+                          for x in gamma_by_strike['display_value']]
+            else:
+                # Single color for unsigned mode
+                colors = 'rgb(55, 83, 109)'
             
             fig_gamma.add_trace(go.Bar(
                 x=gamma_by_strike['strike_price'],
-                y=gamma_by_strike['gamma_display'],
+                y=gamma_by_strike['display_value'],
                 marker_color=colors,
                 marker_line_width=0,
                 width=gamma_by_strike['strike_price'].diff().median() * 0.8 if len(gamma_by_strike) > 1 else 1000,
                 hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
-                              f'<b>USD Gamma:</b> %{{y:.2f}}{unit}<br>' +
+                              f'<b>Gamma:</b> %{{y:.2f}}{unit}<br>' +
                               '<extra></extra>'
             ))
             
-            # Add vertical line at spot price
+            # Add spot price line
             fig_gamma.add_vline(
                 x=spot_price, 
                 line_dash="dash", 
@@ -502,8 +573,9 @@ if 'options_data' in st.session_state:
                 annotation_position="top"
             )
             
-            # Add zero line
-            fig_gamma.add_hline(y=0, line_dash="solid", line_color="lightgray", line_width=1)
+            # Add zero line for signed mode
+            if show_signed:
+                fig_gamma.add_hline(y=0, line_dash="solid", line_color="lightgray", line_width=1)
             
             fig_gamma.update_layout(
                 xaxis_title="Strike Price (USD)",
@@ -531,20 +603,170 @@ if 'options_data' in st.session_state:
             
             st.plotly_chart(fig_gamma, use_container_width=True)
             
-            # Add gamma metrics
-            col1, col2, col3 = st.columns(3)
+            # ================================================================
+            # SUMMARY METRICS
+            # ================================================================
+            
+            st.markdown("---")
+            st.markdown("#### 📊 Summary Metrics")
+            
+            # Calculate metrics
+            total_concentration = gamma_by_strike['gex_unsigned'].sum()
+            max_conc_strike = gamma_by_strike.loc[gamma_by_strike['gex_unsigned'].idxmax(), 'strike_price']
+            
+            # Call/Put concentration ratio (unsigned)
+            call_conc = gamma_df[gamma_df['option_type'] == 'call']['gex_unsigned'].sum()
+            put_conc = gamma_df[gamma_df['option_type'] == 'put']['gex_unsigned'].sum()
+            conc_ratio = call_conc / put_conc if put_conc > 0 else 0
+            
+            if show_signed:
+                net_signed_gex = gamma_by_strike['gex_signed'].sum()
+                call_signed = gamma_df[gamma_df['option_type'] == 'call']['gex_signed'].sum()
+                put_signed = gamma_df[gamma_df['option_type'] == 'put']['gex_signed'].sum()
+                signed_ratio = abs(call_signed) / abs(put_signed) if put_signed != 0 else 0
+            
+            # Display metrics
+            if show_signed:
+                col1, col2, col3, col4 = st.columns(4)
+            else:
+                col1, col2, col3 = st.columns(3)
+            
             with col1:
-                total_gamma_usd = gamma_by_strike['gamma_exposure_signed'].sum()
-                st.metric("Net USD Gamma", format_large_number(total_gamma_usd))
+                st.metric("Total Gamma Concentration", format_large_number(total_concentration))
+                st.caption("Sum of absolute gamma across all strikes")
+            
             with col2:
-                max_strike = gamma_by_strike.loc[gamma_by_strike['gamma_exposure_signed'].abs().idxmax(), 'strike_price']
-                st.metric("Max Gamma Strike", f"${max_strike:,.0f}")
+                st.metric("Max Concentration Strike", f"${max_conc_strike:,.0f}")
+                st.caption("Strike with highest gamma concentration")
+            
             with col3:
-                call_gamma_usd = gamma_df[gamma_df['option_type'] == 'call']['gamma_exposure_signed'].sum()
-                put_gamma_usd = gamma_df[gamma_df['option_type'] == 'put']['gamma_exposure_signed'].sum()
-                st.metric("Call/Put Gamma Ratio", f"{abs(call_gamma_usd/put_gamma_usd):.2f}" if put_gamma_usd != 0 else "N/A")
+                st.metric("Call/Put Concentration Ratio", f"{conc_ratio:.2f}")
+                st.caption("Unsigned ratio (abs values)")
+            
+            if show_signed:
+                with col4:
+                    st.metric("Net Signed GEX (Proxy)", format_large_number(net_signed_gex))
+                    if net_signed_gex > 1e6:
+                        st.caption("🟢 Long gamma proxy")
+                    elif net_signed_gex < -1e6:
+                        st.caption("🔴 Short gamma proxy")
+                    else:
+                        st.caption("⚪ Near neutral")
+            
+            # ================================================================
+            # HEDGING IMPLICATIONS (Only if signed mode)
+            # ================================================================
+            
+            if show_signed:
+                st.markdown("---")
+                st.markdown("#### 🔄 Implied Hedging Under Positioning Prior")
+                st.caption("These estimates assume the selected positioning prior is correct")
+                
+                col1, col2 = st.columns([1, 2])
+                
+                with col1:
+                    move_pct = st.slider(
+                        "Price Move (%)",
+                        min_value=0.5,
+                        max_value=10.0,
+                        value=1.0,
+                        step=0.5,
+                        help="Select price move % to see implied hedging volume"
+                    )
+                    
+                    move_dollar = spot_price * (move_pct / 100)
+                    st.metric("Move Size", f"${move_dollar:,.0f}")
+                
+                with col2:
+                    # Hedging direction logic
+                    # Long gamma (net_signed_gex > 0): up => sell, down => buy
+                    # Short gamma (net_signed_gex < 0): up => buy, down => sell
+                    
+                    # Scale for move size (linear approximation for small moves)
+                    hedge_magnitude = abs(net_signed_gex) * move_pct
+                    
+                    col2a, col2b = st.columns(2)
+                    
+                    with col2a:
+                        st.markdown(f"**⬆️ {move_pct}% Up Move**")
+                        if net_signed_gex > 0:
+                            # Long gamma: dealers sell on rally
+                            st.metric("Implied Hedging", format_large_number(hedge_magnitude))
+                            st.caption("🔴 Dealers sell (pressure)")
+                        else:
+                            # Short gamma: dealers buy on rally
+                            st.metric("Implied Hedging", format_large_number(hedge_magnitude))
+                            st.caption("🟢 Dealers buy (support)")
+                    
+                    with col2b:
+                        st.markdown(f"**⬇️ {move_pct}% Down Move**")
+                        if net_signed_gex > 0:
+                            # Long gamma: dealers buy on dip
+                            st.metric("Implied Hedging", format_large_number(hedge_magnitude))
+                            st.caption("🟢 Dealers buy (support)")
+                        else:
+                            # Short gamma: dealers sell on dip
+                            st.metric("Implied Hedging", format_large_number(hedge_magnitude))
+                            st.caption("🔴 Dealers sell (pressure)")
+            
+            # ================================================================
+            # INTERPRETATION GUIDE
+            # ================================================================
+            
+            st.markdown("---")
+            st.markdown("#### 📖 Interpretation Guide")
+            
+            with st.expander("🔍 How to Read This Analysis", expanded=False):
+                st.markdown("""
+                **What We Observe:**
+                - Open Interest (OI) and Greeks from options market data
+                - Gamma concentration = OI × gamma × spot² / 100
+                - This shows USD notional exposure per 1% spot move
+                
+                **What We Don't Observe:**
+                - Actual dealer positions or inventory
+                - Trade direction or counterparty identities
+                - Real hedging flows
+                
+                **Positioning Prior Options:**
+                
+                1. **Unsigned Only (Default):**
+                   - Shows absolute gamma concentration by strike
+                   - No assumptions about dealer positioning
+                   - Useful for identifying key strikes and concentrations
+                
+                2. **Dealers Short Calls / Long Puts:**
+                   - Standard assumption (dealers sell options to customers)
+                   - Call gamma = negative (dealers must buy on rallies)
+                   - Put gamma = positive (dealers must sell on dips)
+                
+                3. **Dealers Long Calls / Short Puts:**
+                   - Reverse assumption (less common)
+                   - Call gamma = positive
+                   - Put gamma = negative
+                
+                **Key Metrics:**
+                
+                - **Total Gamma Concentration:** Sum of absolute gamma (always shown)
+                - **Max Concentration Strike:** Strike with most gamma (acts as price "magnet")
+                - **Call/Put Concentration Ratio:** Unsigned ratio showing relative size
+                - **Net Signed GEX:** Only shown with positioning prior - indicates long/short gamma
+                
+                **Hedging Implications (Signed Mode Only):**
+                - Estimates assume the selected positioning prior is correct
+                - **Long gamma (positive net):** Dealers stabilize (buy dips, sell rallies)
+                - **Short gamma (negative net):** Dealers magnify (sell dips, buy rallies)
+                - Linear scaling for small moves (< 5%)
+                
+                **Trading Context:**
+                - High concentration at one strike → Price may gravitate toward that level
+                - Long gamma near spot → Expect range-bound trading
+                - Short gamma away from strikes → Expect trending moves
+                - Use alongside other analysis (not standalone trading signal)
+                """)
+        
         else:
-            st.warning("No gamma data available for exposure calculation")
+            st.warning("No gamma data available for analysis")
     
     # ========================================================================
     # TAB 3: Calls vs Puts (USD NOTIONAL IN MILLIONS)
@@ -736,7 +958,7 @@ if 'options_data' in st.session_state:
     # Reorder columns for better CSV layout
     cols_order = ['fetch_time', 'asset', 'spot_price', 'expiry', 'instrument', 'strike_price', 
                   'option_type', 'open_interest', 'oi_usd_notional', 'mark_iv', 'bid_iv', 'ask_iv',
-                  'delta', 'gamma', 'gamma_usd', 'vega', 'theta', 'rho']
+                  'delta', 'gamma', 'vega', 'theta', 'rho']
     
     # Only include columns that exist
     cols_order = [col for col in cols_order if col in download_df.columns]
@@ -766,7 +988,7 @@ if 'options_data' in st.session_state:
     
     st.markdown("### 📋 Raw Data")
     st.dataframe(
-        df[['instrument', 'strike_price', 'option_type', 'open_interest', 'oi_usd_notional', 'mark_iv', 'gamma', 'gamma_usd']],
+        df[['instrument', 'strike_price', 'option_type', 'open_interest', 'oi_usd_notional', 'mark_iv', 'gamma']],
         use_container_width=True
     )
 
@@ -790,7 +1012,7 @@ else:
     
     **Features:**
     - 💵 Real-time spot price from Kaiko
-    - 📊 Gamma exposure in millions
+    - 📊 Gamma concentration analysis with configurable assumptions
     - 🎯 Professional M/B formatting
     """)
     st.stop()
