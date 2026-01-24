@@ -77,9 +77,9 @@ if not check_password():
 st.title("📊 Kaiko Options Analytics Dashboard")
 st.markdown("""
 Analyze cryptocurrency options data from Deribit including:
-- **Open Interest** by strike price
+- **Open Interest** by strike price (in contracts & USD notional)
 - **Implied Volatility** smile
-- **Gamma Exposure** analysis
+- **Gamma Exposure** analysis (in USD terms)
 - **Call/Put** comparisons
 - **3D Volatility Surface**
 """)
@@ -219,7 +219,7 @@ else:
 
 if st.session_state.get('fetch_clicked') and selected_expiry:
     
-   # Check if we have cached data
+    # Check if we have cached data
     if 'cached_data' in st.session_state and st.session_state.get('cache_key') == cache_key:
         options_df = st.session_state['cached_data']
         st.info("✨ Using cached data (click 'Fetch Options Data' again to refresh)")
@@ -269,36 +269,52 @@ if 'options_data' in st.session_state:
     current_asset = st.session_state['current_asset']
     current_expiry = st.session_state['current_expiry']
     
+    # ========================================================================
+    # USD NORMALIZATION CALCULATIONS
+    # ========================================================================
+    
+    # Estimate current spot price (weighted by OI)
+    if not df.empty and df['open_interest'].notna().any():
+        spot_price = (df['strike_price'] * df['open_interest'].fillna(0)).sum() / df['open_interest'].fillna(0).sum()
+    else:
+        spot_price = df['strike_price'].median() if not df.empty else 100000
+    
+    # Add USD notional columns
+    df['oi_usd_notional'] = df['open_interest'] * df['strike_price']
+    
+    # Add USD gamma per strike (gamma × OI × spot for 1% move)
+    df['gamma_usd'] = df['gamma'] * df['open_interest'] * spot_price * 0.01
+    
     # Display current selection
     st.subheader(f"📈 {current_asset} Options - Expiry: {current_expiry}")
     
     # Key metrics row
     st.markdown("### 📊 Key Metrics")
     
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         total_oi = df['open_interest'].fillna(0).sum()
-        st.metric("Total Open Interest", f"{total_oi:,.0f}")
+        st.metric("Total OI (Contracts)", f"{total_oi:,.0f}")
     
     with col2:
+        total_oi_usd = df['oi_usd_notional'].fillna(0).sum()
+        st.metric("Total OI (USD)", f"${total_oi_usd/1e6:.1f}M")
+    
+    with col3:
         num_instruments = len(df)
         instruments_with_oi = df['open_interest'].notna().sum()
         st.metric("Active Instruments", f"{instruments_with_oi}/{num_instruments}")
     
-    with col3:
+    with col4:
         avg_iv = df['mark_iv'].mean()
         if pd.notna(avg_iv):
             st.metric("Average IV", f"{avg_iv:.1f}%")
         else:
             st.metric("Average IV", "N/A")
     
-    with col4:
-        iv_range = df['mark_iv'].max() - df['mark_iv'].min()
-        if pd.notna(iv_range):
-            st.metric("IV Range", f"{iv_range:.1f}%")
-        else:
-            st.metric("IV Range", "N/A")
+    with col5:
+        st.metric("Est. Spot Price", f"${spot_price:,.0f}")
     
     st.divider()
     
@@ -317,11 +333,11 @@ if 'options_data' in st.session_state:
     with tab1:
         col1, col2 = st.columns(2)
         
-        # Open Interest by Strike
+        # Open Interest by Strike (USD Notional)
         with col1:
-            st.markdown("#### Open Interest by Strike Price")
+            st.markdown("#### Open Interest by Strike (USD Notional)")
             
-            oi_df = df[df['open_interest'].notna()].copy()
+            oi_df = df[df['oi_usd_notional'].notna()].copy()
             oi_df = oi_df.sort_values('strike_price')
             
             if not oi_df.empty:
@@ -329,17 +345,17 @@ if 'options_data' in st.session_state:
                 
                 fig_oi.add_trace(go.Bar(
                     x=oi_df['strike_price'],
-                    y=oi_df['open_interest'],
-                    name='Open Interest',
+                    y=oi_df['oi_usd_notional'],
+                    name='OI USD',
                     marker_color='rgb(55, 83, 109)',
-                    hovertemplate='<b>Strike:</b> %{x:,.0f}<br>' +
-                                  '<b>OI:</b> %{y:,.1f}<br>' +
+                    hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
+                                  '<b>OI (USD):</b> $%{y:,.0f}<br>' +
                                   '<extra></extra>'
                 ))
                 
                 fig_oi.update_layout(
                     xaxis_title="Strike Price",
-                    yaxis_title="Open Interest",
+                    yaxis_title="Open Interest (USD Notional)",
                     hovermode='closest',
                     height=400,
                     showlegend=False,
@@ -386,53 +402,49 @@ if 'options_data' in st.session_state:
                 st.warning("No Implied Volatility data available")
     
     # ========================================================================
-    # TAB 2: Greeks & Exposure
+    # TAB 2: Greeks & Exposure (USD GAMMA)
     # ========================================================================
     with tab2:
-        st.markdown("#### Dealers Gamma Exposure by Strike")
-        st.caption("Aggregated gamma exposure (negative = calls, positive = puts from dealer perspective)")
+        st.markdown("#### USD Gamma Exposure by Strike")
+        st.caption("Shows dollar gamma per strike (gamma × OI × spot × 1%). Negative = calls, positive = puts from dealer perspective")
         
-        gamma_df = df[df['gamma'].notna() & df['open_interest'].notna()].copy()
+        gamma_df = df[df['gamma_usd'].notna()].copy()
         
         if not gamma_df.empty:
-            # Calculate gamma exposure
-            gamma_df['gamma_exposure'] = gamma_df.apply(
-                lambda row: row['gamma'] * row['open_interest'] * 
-                           (-1 if row['option_type'] == 'call' else 1),
+            # Calculate signed gamma exposure (calls negative, puts positive for dealers)
+            gamma_df['gamma_exposure_signed'] = gamma_df.apply(
+                lambda row: row['gamma_usd'] * (-1 if row['option_type'] == 'call' else 1),
                 axis=1
             )
             
             # Aggregate by strike
-            gamma_by_strike = gamma_df.groupby('strike_price')['gamma_exposure'].sum().reset_index()
+            gamma_by_strike = gamma_df.groupby('strike_price')['gamma_exposure_signed'].sum().reset_index()
             gamma_by_strike = gamma_by_strike.sort_values('strike_price')
-            
-            # Estimate current spot price
-            weighted_strike = (gamma_df['strike_price'] * gamma_df['open_interest'].abs()).sum() / gamma_df['open_interest'].abs().sum()
             
             # Create chart
             fig_gamma = go.Figure()
             
             colors = ['rgb(31, 119, 180)' if x >= 0 else 'rgb(255, 127, 14)' 
-                      for x in gamma_by_strike['gamma_exposure']]
+                      for x in gamma_by_strike['gamma_exposure_signed']]
             
             fig_gamma.add_trace(go.Bar(
                 x=gamma_by_strike['strike_price'],
-                y=gamma_by_strike['gamma_exposure'],
+                y=gamma_by_strike['gamma_exposure_signed'],
                 marker_color=colors,
                 marker_line_width=0,
                 width=gamma_by_strike['strike_price'].diff().median() * 0.8 if len(gamma_by_strike) > 1 else 1000,
                 hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
-                              '<b>Gamma Exposure:</b> %{y:,.2f}<br>' +
+                              '<b>USD Gamma:</b> $%{y:,.0f}<br>' +
                               '<extra></extra>'
             ))
             
             # Add vertical line at estimated spot price
             fig_gamma.add_vline(
-                x=weighted_strike, 
+                x=spot_price, 
                 line_dash="dash", 
                 line_color="gray", 
                 line_width=2,
-                annotation_text=f"Est. Spot: ${weighted_strike:,.0f}",
+                annotation_text=f"Spot: ${spot_price:,.0f}",
                 annotation_position="top"
             )
             
@@ -441,7 +453,7 @@ if 'options_data' in st.session_state:
             
             fig_gamma.update_layout(
                 xaxis_title="Strike Price (USD)",
-                yaxis_title="Dealers USD Gamma (1% Move)",
+                yaxis_title="USD Gamma Exposure (1% Move)",
                 hovermode='closest',
                 height=500,
                 showlegend=False,
@@ -466,33 +478,33 @@ if 'options_data' in st.session_state:
             # Add gamma metrics
             col1, col2, col3 = st.columns(3)
             with col1:
-                total_gamma = gamma_by_strike['gamma_exposure'].sum()
-                st.metric("Net Gamma Exposure", f"{total_gamma:,.0f}")
+                total_gamma_usd = gamma_by_strike['gamma_exposure_signed'].sum()
+                st.metric("Net USD Gamma", f"${total_gamma_usd:,.0f}")
             with col2:
-                max_strike = gamma_by_strike.loc[gamma_by_strike['gamma_exposure'].abs().idxmax(), 'strike_price']
+                max_strike = gamma_by_strike.loc[gamma_by_strike['gamma_exposure_signed'].abs().idxmax(), 'strike_price']
                 st.metric("Max Gamma Strike", f"${max_strike:,.0f}")
             with col3:
-                call_gamma = gamma_df[gamma_df['option_type'] == 'call']['gamma_exposure'].sum()
-                put_gamma = gamma_df[gamma_df['option_type'] == 'put']['gamma_exposure'].sum()
-                st.metric("Call/Put Gamma Ratio", f"{abs(call_gamma/put_gamma):.2f}" if put_gamma != 0 else "N/A")
+                call_gamma_usd = gamma_df[gamma_df['option_type'] == 'call']['gamma_exposure_signed'].sum()
+                put_gamma_usd = gamma_df[gamma_df['option_type'] == 'put']['gamma_exposure_signed'].sum()
+                st.metric("Call/Put Gamma Ratio", f"{abs(call_gamma_usd/put_gamma_usd):.2f}" if put_gamma_usd != 0 else "N/A")
         else:
             st.warning("No gamma data available for exposure calculation")
     
     # ========================================================================
-    # TAB 3: Calls vs Puts
+    # TAB 3: Calls vs Puts (USD NOTIONAL)
     # ========================================================================
     with tab3:
-        st.markdown("#### Call vs Put Open Interest by Strike")
+        st.markdown("#### Call vs Put Open Interest by Strike (USD Notional)")
         
-        oi_split_df = df[df['open_interest'].notna()].copy()
+        oi_split_df = df[df['oi_usd_notional'].notna()].copy()
         
         if not oi_split_df.empty:
             # Separate calls and puts
-            calls = oi_split_df[oi_split_df['option_type'] == 'call'].groupby('strike_price')['open_interest'].sum().reset_index()
-            puts = oi_split_df[oi_split_df['option_type'] == 'put'].groupby('strike_price')['open_interest'].sum().reset_index()
+            calls = oi_split_df[oi_split_df['option_type'] == 'call'].groupby('strike_price')['oi_usd_notional'].sum().reset_index()
+            puts = oi_split_df[oi_split_df['option_type'] == 'put'].groupby('strike_price')['oi_usd_notional'].sum().reset_index()
             
-            calls.columns = ['strike_price', 'call_oi']
-            puts.columns = ['strike_price', 'put_oi']
+            calls.columns = ['strike_price', 'call_oi_usd']
+            puts.columns = ['strike_price', 'put_oi_usd']
             
             # Merge
             combined = calls.merge(puts, on='strike_price', how='outer').fillna(0)
@@ -503,27 +515,27 @@ if 'options_data' in st.session_state:
             
             fig_cp.add_trace(go.Bar(
                 x=combined['strike_price'],
-                y=combined['call_oi'],
+                y=combined['call_oi_usd'],
                 name='Calls',
                 marker_color='rgb(26, 118, 255)',
-                hovertemplate='<b>Strike:</b> %{x:,.0f}<br>' +
-                              '<b>Call OI:</b> %{y:,.1f}<br>' +
+                hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
+                              '<b>Call OI (USD):</b> $%{y:,.0f}<br>' +
                               '<extra></extra>'
             ))
             
             fig_cp.add_trace(go.Bar(
                 x=combined['strike_price'],
-                y=combined['put_oi'],
+                y=combined['put_oi_usd'],
                 name='Puts',
                 marker_color='rgb(255, 65, 54)',
-                hovertemplate='<b>Strike:</b> %{x:,.0f}<br>' +
-                              '<b>Put OI:</b> %{y:,.1f}<br>' +
+                hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
+                              '<b>Put OI (USD):</b> $%{y:,.0f}<br>' +
                               '<extra></extra>'
             ))
             
             fig_cp.update_layout(
                 xaxis_title="Strike Price",
-                yaxis_title="Open Interest",
+                yaxis_title="Open Interest (USD Notional)",
                 barmode='group',
                 hovermode='closest',
                 height=500,
@@ -543,14 +555,14 @@ if 'options_data' in st.session_state:
             st.markdown("#### Summary Metrics")
             col1, col2, col3 = st.columns(3)
             with col1:
-                total_call_oi = combined['call_oi'].sum()
-                st.metric("Total Call OI", f"{total_call_oi:,.0f}")
+                total_call_oi_usd = combined['call_oi_usd'].sum()
+                st.metric("Total Call OI (USD)", f"${total_call_oi_usd/1e6:.1f}M")
             with col2:
-                total_put_oi = combined['put_oi'].sum()
-                st.metric("Total Put OI", f"{total_put_oi:,.0f}")
+                total_put_oi_usd = combined['put_oi_usd'].sum()
+                st.metric("Total Put OI (USD)", f"${total_put_oi_usd/1e6:.1f}M")
             with col3:
-                pc_ratio = total_put_oi / total_call_oi if total_call_oi > 0 else 0
-                st.metric("Put/Call Ratio", f"{pc_ratio:.2f}")
+                pc_ratio = total_put_oi_usd / total_call_oi_usd if total_call_oi_usd > 0 else 0
+                st.metric("Put/Call Ratio (USD)", f"{pc_ratio:.2f}")
         else:
             st.warning("No open interest data available for call/put split")
     
@@ -663,11 +675,12 @@ if 'options_data' in st.session_state:
     download_df = df.copy()
     download_df['asset'] = current_asset
     download_df['fetch_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    download_df['spot_price_estimate'] = spot_price
     
     # Reorder columns for better CSV layout
-    cols_order = ['fetch_time', 'asset', 'expiry', 'instrument', 'strike_price', 
-                  'option_type', 'open_interest', 'mark_iv', 'bid_iv', 'ask_iv',
-                  'delta', 'gamma', 'vega', 'theta', 'rho']
+    cols_order = ['fetch_time', 'asset', 'spot_price_estimate', 'expiry', 'instrument', 'strike_price', 
+                  'option_type', 'open_interest', 'oi_usd_notional', 'mark_iv', 'bid_iv', 'ask_iv',
+                  'delta', 'gamma', 'gamma_usd', 'vega', 'theta', 'rho']
     
     # Only include columns that exist
     cols_order = [col for col in cols_order if col in download_df.columns]
@@ -697,7 +710,7 @@ if 'options_data' in st.session_state:
     
     st.markdown("### 📋 Raw Data")
     st.dataframe(
-        df[['instrument', 'strike_price', 'option_type', 'open_interest', 'mark_iv', 'delta', 'gamma']],
+        df[['instrument', 'strike_price', 'option_type', 'open_interest', 'oi_usd_notional', 'mark_iv', 'gamma', 'gamma_usd']],
         use_container_width=True
     )
 
@@ -718,5 +731,9 @@ else:
     - ⚡ Use the ATM filter (±30%) for 5-10x faster loading
     - 💾 Data is cached - switching tabs is instant
     - 🔄 Click "Fetch Options Data" again to refresh cached data
+    
+    **New Features:**
+    - 💵 OI shown in USD notional value
+    - 📊 Gamma exposure in USD terms per strike
     """)
     st.stop()
