@@ -143,7 +143,7 @@ col1, col2, col3 = st.columns([1, 2, 1])
 
 with col2:
     # Logo above
-    st.image("assets/kaiko_icon.png", width=200)
+    st.image("assets/kaiko_logo.png", width=100)
     
     # Title below
     st.title("Options Analytics Dashboard")
@@ -170,7 +170,7 @@ st.sidebar.header("Configuration")
 # Asset selection
 asset = st.sidebar.selectbox(
     "Select Asset",
-    options=["BTC", "ETH", "SOL", "XRP", "MATIC"],
+    options=["BTC", "ETH", "SOL", "XRP"],
     index=0
 )
 
@@ -180,7 +180,6 @@ quote_map = {
     "ETH": "usd", 
     "SOL": "usd",
     "XRP": "usd",
-    "MATIC": "usd"
 }
 quote = quote_map[asset]
 
