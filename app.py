@@ -143,7 +143,7 @@ col1, col2, col3 = st.columns([1, 2, 1])
 
 with col2:
     # Logo above
-    st.image("path/to/kaiko_logo.png", width=200)
+    st.image("assets/kaiko_icon.png", width=200)
     
     # Title below
     st.title("Options Analytics Dashboard")
