@@ -14,7 +14,7 @@ from utils.kaiko_api import KaikoAPI
 # Page config (must be first Streamlit command)
 st.set_page_config(
     page_title="Kaiko Options Analytics",
-    page_icon="📊",
+    page_icon="./assets/kaiko_icon.png",
     layout="wide",
     initial_sidebar_state="expanded"
 )
