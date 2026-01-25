@@ -138,17 +138,16 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# App title with logo
-col1, col2 = st.columns([1, 5])
-with col1:
-    try:
-        st.image("assets/kaiko_logo.png", width=150)
-    except:
-        st.title("Kaiko")
+# Center the logo and title
+col1, col2, col3 = st.columns([1, 2, 1])
 
 with col2:
+    # Logo above
+    st.image("path/to/kaiko_logo.png", width=200)
+    
+    # Title below
     st.title("Options Analytics Dashboard")
-    st.caption("Derivatives analysis powered by Kaiko Research")
+    st.markdown("Derivatives analysis powered by Kaiko Research")
 
 st.markdown("""
 Analyze cryptocurrency options data from Deribit including:
