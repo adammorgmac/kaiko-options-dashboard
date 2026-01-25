@@ -144,11 +144,11 @@ with col1:
     try:
         st.image("assets/kaiko_logo.png", width=150)
     except:
-        st.title("📊 Kaiko")
+        st.title("Kaiko")
 
 with col2:
     st.title("Options Analytics Dashboard")
-    st.caption("Professional derivatives analysis powered by Kaiko")
+    st.caption("Derivatives analysis powered by Kaiko Research")
 
 st.markdown("""
 Analyze cryptocurrency options data from Deribit including:
@@ -166,7 +166,7 @@ st.divider()
 # SIDEBAR CONTROLS
 # ============================================================================
 
-st.sidebar.header("⚙️ Configuration")
+st.sidebar.header("Configuration")
 
 # Asset selection
 asset = st.sidebar.selectbox(
@@ -186,7 +186,7 @@ quote_map = {
 quote = quote_map[asset]
 
 # Date range for fetching available expiries
-st.sidebar.subheader("📅 Date Range")
+st.sidebar.subheader("Date Range")
 col1, col2 = st.sidebar.columns(2)
 with col1:
     start_date = st.date_input(
@@ -1304,7 +1304,7 @@ if 'options_data' in st.session_state:
 else:
     # Show instructions if no data loaded yet
     st.info("""
-    ### 👋 Welcome to Kaiko Options Analytics!
+    ### Welcome to Kaiko Options Analytics!
     
     **Get started:**
     1. Select an asset from the sidebar (BTC, ETH, etc.)
@@ -1315,15 +1315,15 @@ else:
     6. Click "Fetch Options Data" to load the dashboard
     
     **Performance Tips:**
-    - ⚡ Use the ATM filter (±30%) for 5-10x faster loading
-    - 💾 Data is cached - switching tabs is instant
-    - 🔄 Click "Fetch Options Data" again to refresh cached data
+    - Use the ATM filter (±30%) for 5-10x faster loading
+    - to refresh click "Fetch Options Data" again and wait
+    - Data is cached so switching tabs is instant
+
     
     **Features:**
-    - 💵 Real-time spot price from Kaiko
-    - 📊 Gamma concentration analysis with configurable assumptions
-    - 📅 Multi-expiry comparison (cached for speed)
-    - 🎯 Professional M/B formatting
-    - 🌊 IV surface with Kaiko branding
+    - Real-time spot price from Kaiko
+    - Gamma concentration analysis with configurable assumptions
+    - Multi-expiry comparison (cached for speed)
+    - IV surface with Kaiko branding
     """)
     st.stop()
