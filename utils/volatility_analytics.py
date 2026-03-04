@@ -1,18 +1,20 @@
 """
-Enhanced Volatility Smile Analytics
+Enhanced Volatility Smile Analytics with Kaiko Proprietary IV
 """
 
 import plotly.graph_objects as go
 import pandas as pd
 
 
-def plot_iv_smile_with_bid_ask(df, spot_price, asset_name, expiry):
+def plot_iv_smile_with_kaiko_iv(df_exchange, df_kaiko, spot_price, asset_name, expiry):
     """
-    Plot IV smile showing mark IV as main line with bid/ask IV as markers
-    Single combined smile for all options (calls + puts)
+    Plot IV smile showing:
+    - Kaiko IV as main BLACK line (proprietary calculation)
+    - Exchange bid/ask IV as green/red triangles (for reference)
     
     Parameters:
-    - df: DataFrame with columns: strike_price, option_type, mark_iv, bid_iv, ask_iv
+    - df_exchange: DataFrame with exchange bid_iv, ask_iv from /risk endpoint
+    - df_kaiko: DataFrame with Kaiko calculated IV from /implied_volatility_smile
     - spot_price: Current spot price
     - asset_name: Asset ticker (e.g., 'BTC')
     - expiry: Expiration date string
@@ -23,65 +25,72 @@ def plot_iv_smile_with_bid_ask(df, spot_price, asset_name, expiry):
     
     fig = go.Figure()
     
-    # Sort by strike price
-    df_sorted = df.sort_values('strike_price').copy()
-    
-    # Filter out NaN values for mark_iv
-    df_mark = df_sorted[df_sorted['mark_iv'].notna()].copy()
-    
-    # ========== MARK IV (Main black line) ==========
-    if not df_mark.empty:
+    # ========== KAIKO IV (Main black line - proprietary) ==========
+    if df_kaiko is not None and not df_kaiko.empty:
+        df_kaiko_sorted = df_kaiko.sort_values('strike').copy()
+        
         fig.add_trace(go.Scatter(
-            x=df_mark['strike_price'],
-            y=df_mark['mark_iv'],
+            x=df_kaiko_sorted['strike'],
+            y=df_kaiko_sorted['implied_volatility'] * 100,  # Convert to percentage
             mode='lines+markers',
             name='Kaiko IV',
-            line=dict(color='black', width=2),
-            marker=dict(size=6, color='black'),
+            line=dict(color='black', width=3),
+            marker=dict(size=8, color='black'),
             hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
-                         '<b>Mark IV:</b> %{y:.2f}%<br>' +
+                         '<b>Kaiko IV:</b> %{y:.2f}%<br>' +
                          '<extra></extra>'
         ))
     
-    # ========== ASK IV (Red triangles down) ==========
-    df_ask = df_sorted[df_sorted['ask_iv'].notna()].copy()
-    if not df_ask.empty:
-        fig.add_trace(go.Scatter(
-            x=df_ask['strike_price'],
-            y=df_ask['ask_iv'],
-            mode='markers',
-            name='Ask IV',
-            marker=dict(
-                size=8,
-                color='red',
-                symbol='triangle-down',
-                line=dict(width=1, color='darkred')
-            ),
-            hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
-                         '<b>Ask IV:</b> %{y:.2f}%<br>' +
-                         '<extra></extra>'
-        ))
+    # ========== EXCHANGE DATA (bid/ask for reference) ==========
+    if df_exchange is not None and not df_exchange.empty:
+        # Deduplicate by strike
+        df_exchange_sorted = df_exchange.sort_values('strike_price').copy()
+        df_dedup = df_exchange_sorted.groupby('strike_price').agg({
+            'bid_iv': 'first',
+            'ask_iv': 'first'
+        }).reset_index()
+        
+        # ASK IV (Red triangles down)
+        df_ask = df_dedup[df_dedup['ask_iv'].notna()].copy()
+        if not df_ask.empty:
+            fig.add_trace(go.Scatter(
+                x=df_ask['strike_price'],
+                y=df_ask['ask_iv'],
+                mode='markers',
+                name='Exchange Ask IV',
+                marker=dict(
+                    size=7,
+                    color='red',
+                    symbol='triangle-down',
+                    line=dict(width=1, color='darkred'),
+                    opacity=0.6
+                ),
+                hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
+                             '<b>Ask IV:</b> %{y:.2f}%<br>' +
+                             '<extra></extra>'
+            ))
+        
+        # BID IV (Green triangles up)
+        df_bid = df_dedup[df_dedup['bid_iv'].notna()].copy()
+        if not df_bid.empty:
+            fig.add_trace(go.Scatter(
+                x=df_bid['strike_price'],
+                y=df_bid['bid_iv'],
+                mode='markers',
+                name='Exchange Bid IV',
+                marker=dict(
+                    size=7,
+                    color='green',
+                    symbol='triangle-up',
+                    line=dict(width=1, color='darkgreen'),
+                    opacity=0.6
+                ),
+                hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
+                             '<b>Bid IV:</b> %{y:.2f}%<br>' +
+                             '<extra></extra>'
+            ))
     
-    # ========== BID IV (Green triangles up) ==========
-    df_bid = df_sorted[df_sorted['bid_iv'].notna()].copy()
-    if not df_bid.empty:
-        fig.add_trace(go.Scatter(
-            x=df_bid['strike_price'],
-            y=df_bid['bid_iv'],
-            mode='markers',
-            name='Bid IV',
-            marker=dict(
-                size=8,
-                color='green',
-                symbol='triangle-up',
-                line=dict(width=1, color='darkgreen')
-            ),
-            hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
-                         '<b>Bid IV:</b> %{y:.2f}%<br>' +
-                         '<extra></extra>'
-        ))
-    
-    # ========== Spot price vertical line (dotted) ==========
+    # ========== Spot price vertical line ==========
     fig.add_vline(
         x=spot_price,
         line_dash="dot",
@@ -93,10 +102,11 @@ def plot_iv_smile_with_bid_ask(df, spot_price, asset_name, expiry):
     
     # Layout
     fig.update_layout(
-        title=f"{asset_name} Volatility Smile - {expiry}",
+        title=f"{asset_name} Volatility Smile - {expiry}<br>" +
+              "<sub>Kaiko Proprietary IV (black) vs Exchange Bid/Ask (triangles)</sub>",
         xaxis_title="Strike Price (USD)",
         yaxis_title="Implied Volatility (%)",
-        height=500,
+        height=550,
         hovermode='closest',
         showlegend=True,
         legend=dict(
@@ -105,7 +115,7 @@ def plot_iv_smile_with_bid_ask(df, spot_price, asset_name, expiry):
             y=0.99,
             xanchor="left",
             x=0.01,
-            bgcolor="rgba(255, 255, 255, 0.8)",
+            bgcolor="rgba(255, 255, 255, 0.9)",
             bordercolor="gray",
             borderwidth=1
         ),
@@ -120,7 +130,7 @@ def plot_iv_smile_with_bid_ask(df, spot_price, asset_name, expiry):
             gridcolor='lightgray',
             zeroline=False
         ),
-        margin=dict(l=50, r=50, t=80, b=50)
+        margin=dict(l=50, r=50, t=100, b=50)
     )
     
     return fig

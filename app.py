@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from utils.kaiko_api import KaikoAPI
 
 # Page config (must be first Streamlit command)
@@ -412,15 +412,15 @@ if 'options_data' in st.session_state:
     # Create tabs for different chart categories
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Overview", "⚡ Gamma Concentration", "📅 Multi-Expiry", "🔵🔴 Calls vs Puts", "🌊 IV Surface"])
     
-    # ========================================================================
-    # TAB 1: Overview - OI and IV
+# ========================================================================
+    # TAB 1: Overview - OI and Kaiko IV Smile
     # ========================================================================
     with tab1:
         # Import the enhanced IV smile function
-        from utils.volatility_analytics import plot_iv_smile_with_bid_ask
+        from utils.volatility_analytics import plot_iv_smile_with_kaiko_iv
         
         # ====================================================================
-        # OPEN INTEREST CHART (Top)
+        # OPEN INTEREST CHART (Full Width on Top)
         # ====================================================================
         st.markdown("#### Open Interest by Strike (USD Notional)")
         
@@ -453,28 +453,79 @@ if 'options_data' in st.session_state:
         else:
             st.warning("No Open Interest data available")
         
-        st.markdown("---")  # Divider between charts
+        st.markdown("---")  # Divider
         
         # ====================================================================
-        # ENHANCED IV SMILE CHART (Bottom)
+        # KAIKO PROPRIETARY IV SMILE CHART (Full Width Below)
         # ====================================================================
-        st.markdown("#### Volatility Smile (Mark / Bid / Ask)")
-        st.caption("Mark IV shown as line, Bid/Ask IV shown as triangles")
+        st.markdown("#### Volatility Smile - Kaiko Proprietary IV")
+        st.caption("Black line: Kaiko's calculated IV | Triangles: Exchange bid/ask IV for reference")
         
-        iv_df = df[df['mark_iv'].notna()].copy()
-        iv_df = iv_df.sort_values('strike_price')
+        # Prepare exchange data (bid/ask from risk endpoint)
+        iv_df_exchange = df[['strike_price', 'option_type', 'bid_iv', 'ask_iv']].copy()
+        iv_df_exchange = iv_df_exchange.sort_values('strike_price')
         
-        if not iv_df.empty:
-            fig_iv_enhanced = plot_iv_smile_with_bid_ask(
-                df=iv_df,
+        # Get all unique strikes from the current option chain
+        exchange_strikes = df['strike_price'].dropna().unique().tolist()
+        
+        # Fetch Kaiko proprietary IV for those exact strikes
+        try:
+            # Convert current timestamp and expiry to ISO format
+            value_time = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+            expiry_iso = pd.to_datetime(current_expiry).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+            
+            with st.spinner("Fetching Kaiko proprietary IV calculation..."):
+                # Get Kaiko IV smile for the exact strikes
+                kaiko_iv_data = api.get_kaiko_iv_smile(
+                    base=current_asset.lower(),
+                    quote=quote,
+                    value_time=value_time,
+                    expiry=expiry_iso,
+                    strikes=exchange_strikes,  # Pass actual strikes from exchange
+                    exchange='drbt'
+                )
+                
+                # Parse Kaiko IV response
+                if kaiko_iv_data.get('data'):
+                    iv_data = kaiko_iv_data['data'][0]
+                    kaiko_ivs = iv_data.get('implied_volatilities', [])
+                    
+                    df_kaiko = pd.DataFrame(kaiko_ivs)
+                    
+                    if not df_kaiko.empty:
+                        st.success(f"✓ Loaded {len(df_kaiko)} Kaiko IV data points across full strike range")
+                    else:
+                        st.warning("No Kaiko IV data available")
+                        df_kaiko = pd.DataFrame()
+                else:
+                    df_kaiko = pd.DataFrame()
+                    st.warning("No Kaiko IV data available for this expiry")
+        
+        except Exception as e:
+            st.error(f"Error fetching Kaiko IV: {str(e)}")
+            df_kaiko = pd.DataFrame()
+        
+        # Plot the combined smile
+        if not iv_df_exchange.empty or not df_kaiko.empty:
+            fig_iv_kaiko = plot_iv_smile_with_kaiko_iv(
+                df_exchange=iv_df_exchange,
+                df_kaiko=df_kaiko,
                 spot_price=spot_price,
                 asset_name=current_asset,
                 expiry=current_expiry
             )
             
-            st.plotly_chart(fig_iv_enhanced, use_container_width=True, key="iv_chart_enhanced")
+            st.plotly_chart(fig_iv_kaiko, use_container_width=True, key="iv_chart_kaiko")
+            
+            # Show data source info
+            col1, col2 = st.columns(2)
+            with col1:
+                st.info("🟦 **Kaiko IV**: Proprietary calculation using space interpolation")
+            with col2:
+                st.info("🔺 **Exchange Bid/Ask**: Deribit-provided values for reference")
+            
         else:
-            st.warning("No Implied Volatility data available")
+            st.warning("No volatility data available")
 
     # ========================================================================
     # TAB 2: Gamma Concentration
