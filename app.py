@@ -416,76 +416,66 @@ if 'options_data' in st.session_state:
     # TAB 1: Overview - OI and IV
     # ========================================================================
     with tab1:
-        col1, col2 = st.columns(2)
+        # Import the enhanced IV smile function
+        from utils.volatility_analytics import plot_iv_smile_with_bid_ask
         
-        # Open Interest by Strike (USD Notional)
-        with col1:
-            st.markdown("#### Open Interest by Strike (USD Notional)")
-            
-            oi_df = df[df['oi_usd_notional'].notna()].copy()
-            oi_df = oi_df.sort_values('strike_price')
-            
-            if not oi_df.empty:
-                fig_oi = go.Figure()
-                
-                fig_oi.add_trace(go.Bar(
-                    x=oi_df['strike_price'],
-                    y=oi_df['oi_usd_notional'] / 1e6,  # Convert to millions
-                    name='OI USD',
-                    marker_color=KAIKO_NAVY,
-                    hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
-                                  '<b>OI:</b> $%{y:.2f}M<br>' +
-                                  '<extra></extra>'
-                ))
-                
-                fig_oi.update_layout(
-                    xaxis_title="Strike Price",
-                    yaxis_title="Open Interest (USD Millions)",
-                    hovermode='closest',
-                    height=400,
-                    showlegend=False,
-                    margin=dict(l=50, r=50, t=30, b=50)
-                )
-                
-                st.plotly_chart(fig_oi, use_container_width=True, key="oi_chart")
-            else:
-                st.warning("No Open Interest data available")
+        # ====================================================================
+        # OPEN INTEREST CHART (Top)
+        # ====================================================================
+        st.markdown("#### Open Interest by Strike (USD Notional)")
         
-        # Implied Volatility Smile
-        with col2:
-            st.markdown("#### Implied Volatility Smile")
+        oi_df = df[df['oi_usd_notional'].notna()].copy()
+        oi_df = oi_df.sort_values('strike_price')
+        
+        if not oi_df.empty:
+            fig_oi = go.Figure()
             
-            iv_df = df[df['mark_iv'].notna()].copy()
-            iv_df = iv_df.sort_values('strike_price')
+            fig_oi.add_trace(go.Bar(
+                x=oi_df['strike_price'],
+                y=oi_df['oi_usd_notional'] / 1e6,  # Convert to millions
+                name='OI USD',
+                marker_color=KAIKO_NAVY,
+                hovertemplate='<b>Strike:</b> $%{x:,.0f}<br>' +
+                              '<b>OI:</b> $%{y:.2f}M<br>' +
+                              '<extra></extra>'
+            ))
             
-            if not iv_df.empty:
-                fig_iv = go.Figure()
-                
-                fig_iv.add_trace(go.Scatter(
-                    x=iv_df['strike_price'],
-                    y=iv_df['mark_iv'],
-                    mode='lines+markers',
-                    name='Mark IV',
-                    line=dict(color=KAIKO_ORANGE, width=2),
-                    marker=dict(size=6, color=KAIKO_ORANGE),
-                    hovertemplate='<b>Strike:</b> %{x:,.0f}<br>' +
-                                  '<b>IV:</b> %{y:.2f}%<br>' +
-                                  '<extra></extra>'
-                ))
-                
-                fig_iv.update_layout(
-                    xaxis_title="Strike Price",
-                    yaxis_title="Implied Volatility (%)",
-                    hovermode='closest',
-                    height=400,
-                    showlegend=False,
-                    margin=dict(l=50, r=50, t=30, b=50)
-                )
-                
-                st.plotly_chart(fig_iv, use_container_width=True, key="iv_chart")
-            else:
-                st.warning("No Implied Volatility data available")
-    
+            fig_oi.update_layout(
+                xaxis_title="Strike Price",
+                yaxis_title="Open Interest (USD Millions)",
+                hovermode='closest',
+                height=400,
+                showlegend=False,
+                margin=dict(l=50, r=50, t=30, b=50)
+            )
+            
+            st.plotly_chart(fig_oi, use_container_width=True, key="oi_chart")
+        else:
+            st.warning("No Open Interest data available")
+        
+        st.markdown("---")  # Divider between charts
+        
+        # ====================================================================
+        # ENHANCED IV SMILE CHART (Bottom)
+        # ====================================================================
+        st.markdown("#### Volatility Smile (Mark / Bid / Ask)")
+        st.caption("Mark IV shown as line, Bid/Ask IV shown as triangles")
+        
+        iv_df = df[df['mark_iv'].notna()].copy()
+        iv_df = iv_df.sort_values('strike_price')
+        
+        if not iv_df.empty:
+            fig_iv_enhanced = plot_iv_smile_with_bid_ask(
+                df=iv_df,
+                spot_price=spot_price,
+                asset_name=current_asset,
+                expiry=current_expiry
+            )
+            
+            st.plotly_chart(fig_iv_enhanced, use_container_width=True, key="iv_chart_enhanced")
+        else:
+            st.warning("No Implied Volatility data available")
+
     # ========================================================================
     # TAB 2: Gamma Concentration
     # ========================================================================
