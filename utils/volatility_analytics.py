@@ -11,6 +11,7 @@ def plot_iv_smile_with_kaiko_iv(df_exchange, df_kaiko, spot_price, asset_name, e
     Plot IV smile showing:
     - Kaiko IV as main BLACK line (proprietary calculation)
     - Exchange bid/ask IV as green/red triangles (for reference)
+    - ONLY show puts left of spot, calls right of spot (eliminates duplicates)
     
     Parameters:
     - df_exchange: DataFrame with exchange bid_iv, ask_iv from /risk endpoint
@@ -43,14 +44,33 @@ def plot_iv_smile_with_kaiko_iv(df_exchange, df_kaiko, spot_price, asset_name, e
     
     # ========== EXCHANGE DATA (bid/ask for reference) ==========
     if df_exchange is not None and not df_exchange.empty:
-        # Deduplicate by strike
-        df_exchange_sorted = df_exchange.sort_values('strike_price').copy()
-        df_dedup = df_exchange_sorted.groupby('strike_price').agg({
+        # Add option_type if not present (determine from strike vs spot)
+        if 'option_type' not in df_exchange.columns:
+            df_exchange['option_type'] = df_exchange['strike_price'].apply(
+                lambda x: 'put' if x < spot_price else 'call'
+            )
+        
+        # Filter: Only show PUTS below spot, CALLS above spot
+        puts_df = df_exchange[
+            (df_exchange['option_type'] == 'put') & 
+            (df_exchange['strike_price'] <= spot_price)
+        ].copy()
+        
+        calls_df = df_exchange[
+            (df_exchange['option_type'] == 'call') & 
+            (df_exchange['strike_price'] >= spot_price)
+        ].copy()
+        
+        # Combine filtered data
+        df_filtered = pd.concat([puts_df, calls_df], ignore_index=True)
+        
+        # Deduplicate by strike (in case there are still any duplicates)
+        df_dedup = df_filtered.groupby('strike_price').agg({
             'bid_iv': 'first',
             'ask_iv': 'first'
         }).reset_index()
         
-        # ASK IV (Red triangles down)
+        # ========== ASK IV (Red triangles down) ==========
         df_ask = df_dedup[df_dedup['ask_iv'].notna()].copy()
         if not df_ask.empty:
             fig.add_trace(go.Scatter(
@@ -70,7 +90,7 @@ def plot_iv_smile_with_kaiko_iv(df_exchange, df_kaiko, spot_price, asset_name, e
                              '<extra></extra>'
             ))
         
-        # BID IV (Green triangles up)
+        # ========== BID IV (Green triangles up) ==========
         df_bid = df_dedup[df_dedup['bid_iv'].notna()].copy()
         if not df_bid.empty:
             fig.add_trace(go.Scatter(
@@ -103,7 +123,7 @@ def plot_iv_smile_with_kaiko_iv(df_exchange, df_kaiko, spot_price, asset_name, e
     # Layout
     fig.update_layout(
         title=f"{asset_name} Volatility Smile - {expiry}<br>" +
-              "<sub>Kaiko Proprietary IV (black) vs Exchange Bid/Ask (triangles)</sub>",
+              "<sub>Kaiko Proprietary IV (black) vs Exchange Bid/Ask (triangles) | Puts ← Spot → Calls</sub>",
         xaxis_title="Strike Price (USD)",
         yaxis_title="Implied Volatility (%)",
         height=550,
